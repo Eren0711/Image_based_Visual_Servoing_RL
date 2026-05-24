@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+
+logs/
+*.mp4
+*.gif
+
+.venv/
+venv/
+.env

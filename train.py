@@ -1,0 +1,270 @@
+"""
+PPO Training Script — Stage 1
+===============================
+Trains a PPO agent on the IBVS Drone Interception environment using
+Stable-Baselines3.
+
+Usage:
+    python train.py                          # default config
+    python train.py --config custom.yaml     # custom config
+    python train.py --timesteps 2000000      # override timesteps
+
+Features:
+    - Vectorized environments for parallel training
+    - TensorBoard logging of training metrics
+    - Custom callback for episode outcome tracking
+    - Periodic model checkpointing
+"""
+
+import os
+import argparse
+import yaml
+import numpy as np
+
+from stable_baselines3 import PPO
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.callbacks import (
+    BaseCallback, CheckpointCallback, CallbackList
+)
+from stable_baselines3.common.logger import configure
+
+from envs.interception_env import InterceptionEnv
+
+
+class InterceptionMetricsCallback(BaseCallback):
+    """Custom callback to log episode-level metrics to TensorBoard.
+
+    Tracks:
+        - Episode success rate (rolling window)
+        - Mean image error at episode end
+        - Mean relative distance at episode end
+        - Episode length statistics
+        - Episode outcome distribution
+    """
+
+    def __init__(self, window_size: int = 100, verbose: int = 0):
+        super().__init__(verbose)
+        self.window_size = window_size
+        self.episode_outcomes = []
+        self.episode_image_errors = []
+        self.episode_distances = []
+
+    def _on_step(self) -> bool:
+        """Called at each environment step.
+
+        Checks for completed episodes in the vectorized env infos and
+        logs aggregated metrics.
+        """
+        # Check for episode completions in vectorized environments
+        infos = self.locals.get('infos', [])
+        for info in infos:
+            # SB3 wraps terminal info in 'terminal_info' or provides
+            # episode stats in 'episode' key for Monitor wrapper.
+            # We check for our custom keys:
+            if 'episode_outcome' in info:
+                outcome = info['episode_outcome']
+                if outcome != 'running':
+                    self.episode_outcomes.append(outcome)
+                    self.episode_image_errors.append(
+                        info.get('image_error', 0.0)
+                    )
+                    self.episode_distances.append(
+                        info.get('relative_distance', 0.0)
+                    )
+
+        # Log metrics every N steps
+        if self.n_calls % 2048 == 0 and len(self.episode_outcomes) > 0:
+            recent = self.episode_outcomes[-self.window_size:]
+
+            # Success rate
+            n_success = sum(1 for o in recent if o == 'success')
+            success_rate = n_success / len(recent)
+            self.logger.record('custom/success_rate', success_rate)
+
+            # FOV loss rate
+            n_fov_loss = sum(1 for o in recent if o == 'fov_loss')
+            fov_loss_rate = n_fov_loss / len(recent)
+            self.logger.record('custom/fov_loss_rate', fov_loss_rate)
+
+            # Timeout rate
+            n_timeout = sum(1 for o in recent if o == 'timeout')
+            timeout_rate = n_timeout / len(recent)
+            self.logger.record('custom/timeout_rate', timeout_rate)
+
+            # Mean image error (last episodes)
+            recent_errors = self.episode_image_errors[-self.window_size:]
+            self.logger.record(
+                'custom/mean_image_error', np.mean(recent_errors)
+            )
+
+            # Mean final distance
+            recent_dists = self.episode_distances[-self.window_size:]
+            self.logger.record(
+                'custom/mean_final_distance', np.mean(recent_dists)
+            )
+
+            # Total episodes
+            self.logger.record(
+                'custom/total_episodes', len(self.episode_outcomes)
+            )
+
+        return True
+
+
+def load_config(config_path: str) -> dict:
+    """Load configuration from YAML file.
+
+    Args:
+        config_path: Path to the YAML config file.
+
+    Returns:
+        dict: parsed configuration.
+    """
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+
+def make_env(config: dict):
+    """Factory function for creating InterceptionEnv instances.
+
+    Args:
+        config: Full configuration dictionary.
+
+    Returns:
+        Callable that creates a new environment instance.
+    """
+    def _init():
+        return InterceptionEnv(config=config)
+    return _init
+
+
+def main():
+    """Main training entry point."""
+    parser = argparse.ArgumentParser(
+        description='Train PPO agent for IBVS drone interception'
+    )
+    parser.add_argument(
+        '--config', type=str, default='config.yaml',
+        help='Path to configuration YAML file'
+    )
+    parser.add_argument(
+        '--timesteps', type=int, default=None,
+        help='Override total training timesteps'
+    )
+    parser.add_argument(
+        '--n-envs', type=int, default=None,
+        help='Override number of parallel environments'
+    )
+    parser.add_argument(
+        '--resume', type=str, default=None,
+        help='Path to a saved model to resume training from'
+    )
+    args = parser.parse_args()
+
+    # --- Load config ---
+    config = load_config(args.config)
+    train_cfg = config['training']
+
+    total_timesteps = args.timesteps or train_cfg['total_timesteps']
+    n_envs = args.n_envs or train_cfg['n_envs']
+    log_dir = train_cfg['log_dir']
+    save_dir = train_cfg['save_dir']
+    checkpoint_freq = train_cfg.get('checkpoint_freq', 50000)
+
+    # --- Create directories ---
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # --- Create vectorized environment ---
+    print(f"Creating {n_envs} parallel environments...")
+    vec_env = make_vec_env(
+        make_env(config),
+        n_envs=n_envs,
+    )
+
+    # --- Create or load model ---
+    if args.resume:
+        print(f"Resuming training from: {args.resume}")
+        model = PPO.load(args.resume, env=vec_env)
+    else:
+        print("Creating new PPO model...")
+        model = PPO(
+            policy=train_cfg['policy'],
+            env=vec_env,
+            learning_rate=train_cfg['learning_rate'],
+            n_steps=train_cfg['n_steps'],
+            batch_size=train_cfg['batch_size'],
+            n_epochs=train_cfg['n_epochs'],
+            gamma=train_cfg['gamma'],
+            gae_lambda=train_cfg['gae_lambda'],
+            clip_range=train_cfg['clip_range'],
+            ent_coef=train_cfg['ent_coef'],
+            verbose=1,
+            tensorboard_log=log_dir,
+        )
+
+    # --- Set up callbacks ---
+    metrics_callback = InterceptionMetricsCallback(
+        window_size=100, verbose=0
+    )
+    checkpoint_callback = CheckpointCallback(
+        save_freq=max(checkpoint_freq // n_envs, 1),
+        save_path=save_dir,
+        name_prefix='ibvs_ppo',
+        save_replay_buffer=False,
+        save_vecnormalize=False,
+    )
+    callback = CallbackList([metrics_callback, checkpoint_callback])
+
+    # --- Train ---
+    print(f"\n{'='*60}")
+    print(f"  IBVS Drone Interception — PPO Training")
+    print(f"{'='*60}")
+    print(f"  Total timesteps : {total_timesteps:,}")
+    print(f"  Parallel envs   : {n_envs}")
+    print(f"  Policy           : {train_cfg['policy']}")
+    print(f"  Learning rate    : {train_cfg['learning_rate']}")
+    print(f"  Batch size       : {train_cfg['batch_size']}")
+    print(f"  Log directory    : {log_dir}")
+    print(f"  Save directory   : {save_dir}")
+    print(f"{'='*60}\n")
+
+    model.learn(
+        total_timesteps=total_timesteps,
+        callback=callback,
+        progress_bar=True,
+    )
+
+    # --- Save final model ---
+    final_path = os.path.join(save_dir, 'ibvs_ppo_final')
+    model.save(final_path)
+    print(f"\nFinal model saved to: {final_path}")
+
+    # --- Print training summary ---
+    outcomes = metrics_callback.episode_outcomes
+    if outcomes:
+        n_total = len(outcomes)
+        n_success = sum(1 for o in outcomes if o == 'success')
+        n_fov = sum(1 for o in outcomes if o == 'fov_loss')
+        n_timeout = sum(1 for o in outcomes if o == 'timeout')
+
+        print(f"\n{'='*60}")
+        print(f"  Training Summary")
+        print(f"{'='*60}")
+        print(f"  Total episodes   : {n_total}")
+        print(f"  Success          : {n_success} ({100*n_success/n_total:.1f}%)")
+        print(f"  FOV loss         : {n_fov} ({100*n_fov/n_total:.1f}%)")
+        print(f"  Timeout          : {n_timeout} ({100*n_timeout/n_total:.1f}%)")
+
+        # Last 100 episodes
+        last = outcomes[-100:]
+        n_s = sum(1 for o in last if o == 'success')
+        print(f"\n  Last 100 episodes:")
+        print(f"    Success rate   : {100*n_s/len(last):.1f}%")
+        print(f"{'='*60}")
+
+    vec_env.close()
+
+
+if __name__ == '__main__':
+    main()

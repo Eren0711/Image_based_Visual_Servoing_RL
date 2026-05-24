@@ -1,0 +1,84 @@
+# =============================================================================
+# RL-Based Image-Guided Drone Interception — Stage 1 Configuration
+# Reference: "High-Speed Interception Multicopter Control by IBVS"
+#            Yang, Bai, She, Quan (arXiv:2404.08296)
+#
+# Coordinate convention: NED (North-East-Down), z-axis points downward
+# =============================================================================
+
+# --- Camera parameters ---
+camera:
+  f_oc: 300.0                      # Focal length (normalized units)
+  alpha_hfov: 1.2217               # Horizontal FOV (rad) ≈ 70°
+  alpha_vfov: 0.9599               # Vertical FOV (rad) ≈ 55°
+  # Camera-to-body rotation: Euler angles [roll, pitch, yaw] in radians
+  # Default: forward-looking camera (camera z-axis aligned with body x-axis)
+  # This rotation maps body frame → camera frame:
+  #   body x (forward) → camera z (optical axis)
+  #   body y (right)   → camera x (image right)
+  #   body z (down)    → camera y (image down)
+  R_c_b_euler: [0.0, -1.5707963, 0.0]   # [0, -π/2, 0]
+
+# --- Interceptor drone ---
+interceptor:
+  v_max: 15.0                      # Max velocity per body axis (m/s) — Increased from 5.0 to catch 10 m/s target
+  yaw_rate_max: 0.7854             # Max yaw rate (rad/s) ≈ π/4
+  dt: 0.02                         # Simulation timestep (s) — 50 Hz outer loop
+
+# --- Target drone ---
+target:
+  v_max: 10.0                      # Max target speed (m/s)
+  a_max: 5.0                       # Max target acceleration (m/s²)
+  # Sinusoidal evasion defaults
+  sin_amplitude: 3.0               # Lateral amplitude (m/s²)
+  sin_frequency: 1.5               # Angular frequency (rad/s)
+  # Circular motion defaults
+  circle_radius: 15.0              # Orbit radius (m)
+  circle_omega: 0.5                # Angular frequency (rad/s)
+  # Random aggressive defaults
+  random_switch_interval: 25       # Steps between acceleration resamples
+
+# --- Environment ---
+env:
+  max_steps: 500                   # Maximum episode length
+  d_success: 0.5                   # Interception distance threshold (m)
+  fov_loss_limit: 10               # Consecutive lost-FOV steps before termination
+  init_distance_range: [10.0, 30.0]  # Initial relative distance range (m)
+  norm_distance_max: 50.0          # Max distance for observation normalization
+  norm_velocity_max: 15.0          # Max velocity for observation normalization
+
+# --- Reward weights ---
+reward:
+  w_image: 0.2                    # Image centering reward weight — Reduced from 1.0 to prevent hover stalling
+  w_approach: 2.0                 # Distance reduction reward weight — Increased from 0.5 to encourage aggressive approach
+  w_fov_loss: -10.0               # FOV loss penalty
+  w_boundary: -0.1                # FOV boundary proximity penalty weight
+  w_effort: -0.01                 # Control effort penalty weight
+  w_intercept: 500.0              # Successful interception terminal reward — Increased from 50.0 to heavily favor completion
+  w_timeout: -0.2                 # Per-step time penalty — Increased from -0.01 to add time-to-intercept pressure
+  k1_image: 10.0                  # Sharpness of exp(-k1 * ||p_bar||^2)
+
+# --- Training ---
+training:
+  algorithm: PPO
+  total_timesteps: 10_000_000
+  n_envs: 16                      # Parallel environments for VecEnv
+  policy: MlpPolicy
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  log_dir: ./logs/tensorboard
+  save_dir: ./logs/models
+  checkpoint_freq: 50000          # Save model every N steps
+
+# --- Evaluation ---
+evaluation:
+  n_episodes: 20
+  deterministic: true
+  save_dir: ./logs/eval
+  render: false
