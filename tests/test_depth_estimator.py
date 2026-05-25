@@ -30,6 +30,11 @@ from stable_baselines3 import PPO
 from envs.interception_env import InterceptionEnv
 from observers.interaction_matrix import InteractionMatrix
 from observers.depth_estimator import DepthEstimator
+from experiment_paths import (
+    default_model_path,
+    ensure_stage_dirs,
+    get_stage_paths,
+)
 
 
 def run_episode_with_depth_estimation(model, env, estimator, config,
@@ -318,25 +323,30 @@ def main():
     parser = argparse.ArgumentParser(
         description='Validate Jacobian-based depth estimator against ground truth'
     )
-    parser.add_argument('--model', type=str, required=True,
+    parser.add_argument('--model', type=str, default=None,
                         help='Path to trained model')
     parser.add_argument('--config', type=str, default='config.yaml',
                         help='Path to config YAML')
+    parser.add_argument('--stage', type=str, default=None,
+                        help='Experiment stage name for outputs and default model path')
     parser.add_argument('--episodes', type=int, default=3,
                         help='Number of episodes to test')
     parser.add_argument('--seed', type=int, default=42,
                         help='Base random seed')
-    parser.add_argument('--save-dir', type=str, default='./logs/depth_test',
+    parser.add_argument('--save-dir', type=str, default=None,
                         help='Directory to save plots')
     args = parser.parse_args()
 
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    paths = get_stage_paths(config, args.stage)
+    model_path = args.model or default_model_path(paths)
+    save_dir = args.save_dir or str(paths['depth_test'])
 
     # Load model
-    print(f"Loading model: {args.model}")
-    model = PPO.load(args.model)
+    print(f"Loading model: {model_path}")
+    model = PPO.load(model_path)
 
     # Create environment
     env = InterceptionEnv(config=config)
@@ -349,7 +359,10 @@ def main():
         R_base=0.1,      # Base measurement noise
     )
 
-    os.makedirs(args.save_dir, exist_ok=True)
+    if args.save_dir is None:
+        ensure_stage_dirs(paths, 'depth_test')
+    else:
+        os.makedirs(save_dir, exist_ok=True)
 
     # Run episodes
     all_errors = []
@@ -386,7 +399,7 @@ def main():
         all_rel_errors.append(np.mean(rel_err[conv_start:]))
 
         # Plot
-        save_path = os.path.join(args.save_dir, f'depth_ep{ep + 1}.png')
+        save_path = os.path.join(save_dir, f'depth_ep{ep + 1}.png')
         plot_depth_estimation(data, config, save_path=save_path)
 
     # Summary

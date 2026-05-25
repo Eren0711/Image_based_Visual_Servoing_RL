@@ -46,6 +46,26 @@ The simulator utilizes a physical **NED (North-East-Down)** coordinate conventio
     └── target_model.py    # Target drone with 4 distinct flight profiles
 ```
 
+### Stage-Based Output Layout
+Training artifacts are organized by experiment stage so that results from
+Stage 1a, Stage 1b, Stage 2a, and later stages can be compared later:
+
+```filepath
+logs/stages/
+├── stage1a/
+│   ├── models/
+│   ├── tensorboard/
+│   ├── eval/
+│   ├── videos/
+│   └── depth_test/
+└── stage1b/
+    ├── models/
+    ├── tensorboard/
+    ├── eval/
+    ├── videos/
+    └── depth_test/
+```
+
 ---
 
 ## ⚙️ Installation & Setup
@@ -84,6 +104,9 @@ Trains a PPO agent across multiple vectorized environments using the hyperparame
 # Train using the default config.yaml
 python train.py
 
+# Train and save outputs under logs/stages/stage1a/
+python train.py --stage stage1a --timesteps 1000000 --n-envs 16
+
 # Train with an overridden custom configuration
 python train.py --config config.yaml
 
@@ -91,19 +114,20 @@ python train.py --config config.yaml
 python train.py --timesteps 500000 --n-envs 4
 
 # Resume training from a saved checkpoint
-python train.py --resume logs/models/ibvs_ppo_100000_steps.zip
+python train.py --stage stage1a --resume logs/stages/stage1a/models/ibvs_ppo_100000_steps.zip
 ```
 
 #### CLI Parameters:
 * `--config` *(str)*: Path to the configuration YAML file (default: `config.yaml`).
+* `--stage` *(str)*: Experiment stage name used for outputs (default: `experiment.stage` from `config.yaml`).
 * `--timesteps` *(int)*: Override the total training timesteps.
 * `--n-envs` *(int)*: Override the number of parallel simulation environments.
 * `--resume` *(str)*: Path to a saved `.zip` model checkpoint to resume training from.
 
 > [!NOTE]
 > **Output Assets**:
-> - Models are saved under `logs/models/` (a final model `ibvs_ppo_final.zip` and periodic checkpoints are generated).
-> - TensorBoard event files are saved to `logs/tensorboard/`. Run `tensorboard --logdir logs/tensorboard` to inspect live progress.
+> - Models are saved under `logs/stages/<stage>/models/` (a final model `ibvs_ppo_final.zip` and periodic checkpoints are generated).
+> - TensorBoard event files are saved to `logs/stages/<stage>/tensorboard/`. Run `tensorboard --logdir logs/stages/<stage>/tensorboard` to inspect live progress.
 
 ---
 
@@ -112,18 +136,19 @@ Performs multiple evaluation episodes to assess the agent's performance (success
 
 ```bash
 # Evaluate the final model on 20 episodes
-python eval.py --model logs/models/ibvs_ppo_final
+python eval.py --stage stage1a
 
 # Run 50 deterministic evaluation episodes using a custom random seed
-python eval.py --model logs/models/ibvs_ppo_final --episodes 50 --seed 123 --deterministic
+python eval.py --stage stage1a --episodes 50 --seed 123 --deterministic
 
 # Plot the best-performing episode instead of the default first episode
-python eval.py --model logs/models/ibvs_ppo_final --plot-episode -1
+python eval.py --stage stage1a --plot-episode -1
 ```
 
 #### CLI Parameters:
-* `--model` *(str, required)*: Path to the saved model (exclude the `.zip` extension).
+* `--model` *(str)*: Path to the saved model (exclude the `.zip` extension). If omitted, uses `logs/stages/<stage>/models/ibvs_ppo_final`.
 * `--config` *(str)*: Path to the configuration YAML file.
+* `--stage` *(str)*: Experiment stage name used for outputs and the default model path.
 * `--episodes` *(int)*: Number of episodes to run during evaluation.
 * `--deterministic` *(flag)*: Force the policy to choose actions deterministically.
 * `--plot-episode` *(int)*: Index of the episode to plot. Set to `0` for the first, or `-1` to automatically choose the "best" episode (lowest relative interception distance).
@@ -131,7 +156,7 @@ python eval.py --model logs/models/ibvs_ppo_final --plot-episode -1
 
 > [!NOTE]
 > **Output Assets**:
-> - An episode breakdown diagram is saved under `logs/eval/episode_<id>_analysis.png`, plotting 3D coordinates, camera coordinate trajectories, distance histories, actions, and step rewards.
+> - An episode breakdown diagram is saved under `logs/stages/<stage>/eval/episode_<id>_analysis.png`, plotting 3D coordinates, camera coordinate trajectories, distance histories, actions, and step rewards.
 
 ---
 
@@ -139,23 +164,24 @@ python eval.py --model logs/models/ibvs_ppo_final --plot-episode -1
 Generates high-performance interactive or file-based synchronized animations showing the drone in real-time alongside a diagnostic summary dashboard.
 
 ```bash
-# Play an interactive 4-panel animation of the best evaluation episode
-python visualize.py --model logs/models/ibvs_ppo_final --episodes 10 --episode best
+# Save the default 4-panel animation of the best evaluation episode
+python visualize.py --stage stage1a --episodes 10 --episode best
 
 # Export a high-resolution animation to an MP4 video file at 30 FPS
-python visualize.py --model logs/models/ibvs_ppo_final --save replay.mp4 --fps 30
+python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.mp4 --fps 30
 
 # Export the animation as a GIF
-python visualize.py --model logs/models/ibvs_ppo_final --save replay.gif --skip 3
+python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.gif --skip 3
 
 # Run a 100-episode evaluation and save a static aggregate performance dashboard
-python visualize.py --model logs/models/ibvs_ppo_final --episodes 100 --save-dashboard logs/eval/dashboard.png
+python visualize.py --stage stage1a --episodes 100 --save-dashboard logs/stages/stage1a/eval/dashboard.png
 ```
 
 #### CLI Parameters:
-* `--model` *(str, required)*: Path to the saved model file (exclude the `.zip` extension).
+* `--model` *(str)*: Path to the saved model file (exclude the `.zip` extension). If omitted, uses `logs/stages/<stage>/models/ibvs_ppo_final`.
 * `--config` *(str)*: Path to the configuration YAML file.
-* `--save` *(str)*: Output filename for the exported animation (supports `.mp4` and `.gif`). If omitted, launches an interactive GUI window.
+* `--stage` *(str)*: Experiment stage name used for outputs and the default model path.
+* `--save` *(str)*: Output filename for the exported animation (supports `.mp4` and `.gif`). If omitted with `--stage`, saves to `logs/stages/<stage>/videos/replay_best.mp4`; otherwise launches an interactive GUI window.
 * `--save-dashboard` *(str)*: Path to save the multi-episode dashboard analysis image (e.g. `dashboard.png`).
 * `--episodes` *(int)*: Number of evaluation episodes to run before selecting one to animate (default: `1`).
 * `--episode` *(str)*: Selection criterion for the animation: `'best'` (lowest final distance), `'worst'`, or an explicit integer index (e.g., `0` for the first episode).

@@ -32,6 +32,11 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from stable_baselines3 import PPO
 from envs.interception_env import InterceptionEnv
 from models.camera_model import PinholeCamera
+from experiment_paths import (
+    default_model_path,
+    ensure_stage_dirs,
+    get_stage_paths,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -740,12 +745,16 @@ def main():
         description='Animated visualization of trained IBVS agent'
     )
     parser.add_argument(
-        '--model', type=str, required=True,
+        '--model', type=str, default=None,
         help='Path to saved SB3 model (without .zip)'
     )
     parser.add_argument(
         '--config', type=str, default='config.yaml',
         help='Path to config YAML file'
+    )
+    parser.add_argument(
+        '--stage', type=str, default=None,
+        help='Experiment stage name for outputs and default model path'
     )
     parser.add_argument(
         '--save', type=str, default=None,
@@ -784,10 +793,21 @@ def main():
     # --- Load config ---
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    paths = get_stage_paths(config, args.stage)
+    model_path = args.model or default_model_path(paths)
+
+    save_path = args.save
+    if save_path is None and args.stage is not None:
+        ensure_stage_dirs(paths, 'videos')
+        save_path = str(paths['videos'] / 'replay_best.mp4')
+    elif save_path is not None:
+        save_parent = os.path.dirname(save_path)
+        if save_parent:
+            os.makedirs(save_parent, exist_ok=True)
 
     # --- Load model ---
-    print(f"Loading model: {args.model}")
-    model = PPO.load(args.model)
+    print(f"Loading model: {model_path}")
+    model = PPO.load(model_path)
 
     # --- Create environment ---
     env = InterceptionEnv(config=config)
@@ -826,19 +846,20 @@ def main():
     create_animation(
         all_data[idx], config,
         fps=args.fps,
-        save_path=args.save,
+        save_path=save_path,
         skip=args.skip
     )
 
     # --- Summary dashboard ---
-    if n_episodes > 1 or args.save_dashboard:
+    if n_episodes > 1 or args.save_dashboard or args.stage is not None:
         save_dash = args.save_dashboard
-        if save_dash is None and n_episodes > 1:
-            save_dash = os.path.join(
-                config.get('evaluation', {}).get('save_dir', './logs/eval'),
-                'dashboard.png'
-            )
-            os.makedirs(os.path.dirname(save_dash), exist_ok=True)
+        if save_dash is None:
+            ensure_stage_dirs(paths, 'eval')
+            save_dash = str(paths['eval'] / 'dashboard.png')
+        else:
+            save_parent = os.path.dirname(save_dash)
+            if save_parent:
+                os.makedirs(save_parent, exist_ok=True)
 
         print(f"\nGenerating summary dashboard...")
         create_summary_dashboard(all_data, config, save_path=save_dash)

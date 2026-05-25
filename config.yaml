@@ -6,6 +6,11 @@
 # Coordinate convention: NED (North-East-Down), z-axis points downward
 # =============================================================================
 
+# --- Experiment output layout ---
+experiment:
+  stage: stage1a
+  output_root: ./logs/stages
+
 # --- Camera parameters ---
 camera:
   f_oc: 300.0                      # Focal length (normalized units)

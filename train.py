@@ -29,6 +29,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.logger import configure
 
 from envs.interception_env import InterceptionEnv
+from experiment_paths import get_stage_paths, ensure_stage_dirs
 
 
 class InterceptionMetricsCallback(BaseCallback):
@@ -148,6 +149,10 @@ def main():
         help='Path to configuration YAML file'
     )
     parser.add_argument(
+        '--stage', type=str, default=None,
+        help='Experiment stage name for outputs (default: config experiment.stage)'
+    )
+    parser.add_argument(
         '--timesteps', type=int, default=None,
         help='Override total training timesteps'
     )
@@ -164,16 +169,16 @@ def main():
     # --- Load config ---
     config = load_config(args.config)
     train_cfg = config['training']
+    paths = get_stage_paths(config, args.stage)
 
     total_timesteps = args.timesteps or train_cfg['total_timesteps']
     n_envs = args.n_envs or train_cfg['n_envs']
-    log_dir = train_cfg['log_dir']
-    save_dir = train_cfg['save_dir']
+    log_dir = str(paths['tensorboard'])
+    save_dir = str(paths['models'])
     checkpoint_freq = train_cfg.get('checkpoint_freq', 50000)
 
     # --- Create directories ---
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(save_dir, exist_ok=True)
+    ensure_stage_dirs(paths, 'tensorboard', 'models')
 
     # --- Create vectorized environment ---
     print(f"Creating {n_envs} parallel environments...")
@@ -221,6 +226,7 @@ def main():
     print(f"  IBVS Drone Interception — PPO Training")
     print(f"{'='*60}")
     print(f"  Total timesteps : {total_timesteps:,}")
+    print(f"  Stage           : {paths['stage']}")
     print(f"  Parallel envs   : {n_envs}")
     print(f"  Policy           : {train_cfg['policy']}")
     print(f"  Learning rate    : {train_cfg['learning_rate']}")

@@ -26,6 +26,11 @@ from matplotlib.gridspec import GridSpec
 
 from stable_baselines3 import PPO
 from envs.interception_env import InterceptionEnv
+from experiment_paths import (
+    default_model_path,
+    ensure_stage_dirs,
+    get_stage_paths,
+)
 
 
 def load_config(config_path: str) -> dict:
@@ -34,7 +39,8 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def evaluate_episode(model, env, deterministic: bool = True) -> dict:
+def evaluate_episode(model, env, deterministic: bool = True,
+                     seed: int = None) -> dict:
     """Run a single evaluation episode and collect trajectory data.
 
     Args:
@@ -45,7 +51,7 @@ def evaluate_episode(model, env, deterministic: bool = True) -> dict:
     Returns:
         dict with trajectory data for visualization.
     """
-    obs, info = env.reset()
+    obs, info = env.reset(seed=seed)
 
     data = {
         'interceptor_pos': [info['interceptor_pos'].copy()],
@@ -350,12 +356,16 @@ def main():
         description='Evaluate trained PPO agent for IBVS drone interception'
     )
     parser.add_argument(
-        '--model', type=str, required=True,
+        '--model', type=str, default=None,
         help='Path to saved model (without .zip extension)'
     )
     parser.add_argument(
         '--config', type=str, default='config.yaml',
         help='Path to configuration YAML file'
+    )
+    parser.add_argument(
+        '--stage', type=str, default=None,
+        help='Experiment stage name for outputs and default model path'
     )
     parser.add_argument(
         '--episodes', type=int, default=None,
@@ -378,16 +388,18 @@ def main():
     # --- Load config ---
     config = load_config(args.config)
     eval_cfg = config.get('evaluation', {})
+    paths = get_stage_paths(config, args.stage)
 
     n_episodes = args.episodes or eval_cfg.get('n_episodes', 20)
     deterministic = args.deterministic if args.deterministic is not None \
         else eval_cfg.get('deterministic', True)
-    save_dir = eval_cfg.get('save_dir', './logs/eval')
-    os.makedirs(save_dir, exist_ok=True)
+    save_dir = str(paths['eval'])
+    ensure_stage_dirs(paths, 'eval')
+    model_path = args.model or default_model_path(paths)
 
     # --- Load model ---
-    print(f"Loading model from: {args.model}")
-    model = PPO.load(args.model)
+    print(f"Loading model from: {model_path}")
+    model = PPO.load(model_path)
 
     # --- Create environment ---
     env = InterceptionEnv(config=config)
@@ -397,8 +409,9 @@ def main():
           f"(deterministic={deterministic})...")
     all_data = []
     for i in range(n_episodes):
-        env.reset(seed=args.seed + i)
-        data = evaluate_episode(model, env, deterministic=deterministic)
+        data = evaluate_episode(
+            model, env, deterministic=deterministic, seed=args.seed + i
+        )
         outcome_symbol = {'success': '✓', 'fov_loss': '✗', 'timeout': '⏱'}
         symbol = outcome_symbol.get(data['outcome'], '?')
         print(f"  Episode {i+1:3d}/{n_episodes}: {symbol} {data['outcome']:<10s} "
