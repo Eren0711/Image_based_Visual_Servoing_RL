@@ -1,78 +1,97 @@
 # =============================================================================
-# RL-Based Image-Guided Drone Interception — Stage 1b Configuration
+# RL-Based Image-Guided Drone Interception — Stage 2b Configuration
 # Reference: "High-Speed Interception Multicopter Control by IBVS"
 #            Yang, Bai, She, Quan (arXiv:2404.08296)
 #
-# Stage 1b: Acceleration-based control with velocity integration
-#   - Action = body-frame acceleration (not velocity)
-#   - Velocity integrates over time: v += a * dt
-#   - Jerk penalty to encourage smooth actions
-#   - Previous action included in observation (22-dim)
+# Stage 2b: Measurement Noise + Delay + DKF State Observer
+#   - Adds camera processing delay (D steps) to image measurements
+#   - Adds Gaussian noise to detected image coordinates
+#   - DKF filters noisy/delayed measurements for the agent
+#   - Warm-start from Stage 2a policy (same observation structure)
+#   - Three experiment conditions:
+#     (1) Stage 2a baseline (no noise/delay)
+#     (2) Noise+delay WITHOUT DKF
+#     (3) Noise+delay WITH DKF
 #
 # Coordinate convention: NED (North-East-Down), z-axis points downward
 # =============================================================================
 
 # --- Camera parameters ---
 camera:
-  f_oc: 300.0                      # Focal length (normalized units)
-  alpha_hfov: 1.2217               # Horizontal FOV (rad) ≈ 70°
-  alpha_vfov: 0.9599               # Vertical FOV (rad) ≈ 55°
-  # Camera-to-body rotation: Euler angles [roll, pitch, yaw] in radians
-  # Default: forward-looking camera (camera z-axis aligned with body x-axis)
-  # This rotation maps body frame → camera frame:
-  #   body x (forward) → camera z (optical axis)
-  #   body y (right)   → camera x (image right)
-  #   body z (down)    → camera y (image down)
-  R_c_b_euler: [0.0, -1.5707963, 0.0]   # [0, -π/2, 0]
+  f_oc: 300.0
+  alpha_hfov: 1.2217               # ~70°
+  alpha_vfov: 0.9599               # ~55°
+  R_c_b_euler: [0.0, -1.5707963, 0.0]
 
 # --- Interceptor drone ---
 interceptor:
-  v_max: 15.0                      # Max velocity per body axis (m/s)
-  a_max: 10.0                      # Max acceleration per body axis (m/s²) — NEW in Stage 1b
-  yaw_rate_max: 0.7854             # Max yaw rate (rad/s) ≈ π/4
-  dt: 0.02                         # Simulation timestep (s) — 50 Hz outer loop
+  v_max: 15.0
+  a_max: 10.0
+  yaw_rate_max: 0.7854             # ~π/4
+  dt: 0.02                         # 50 Hz
 
 # --- Target drone ---
 target:
-  v_max: 10.0                      # Max target speed (m/s)
-  a_max: 5.0                       # Max target acceleration (m/s²)
-  # Sinusoidal evasion defaults
-  sin_amplitude: 3.0               # Lateral amplitude (m/s²)
-  sin_frequency: 1.5               # Angular frequency (rad/s)
-  # Circular motion defaults
-  circle_radius: 15.0              # Orbit radius (m)
-  circle_omega: 0.5                # Angular frequency (rad/s)
-  # Random aggressive defaults
-  random_switch_interval: 25       # Steps between acceleration resamples
+  v_max: 10.0
+  a_max: 5.0
+  maneuver_modes: ['constant_velocity', 'sinusoidal']
+  sin_amplitude: 3.0
+  sin_frequency: 1.5
+  circle_radius: 15.0
+  circle_omega: 0.5
+  random_switch_interval: 25
 
 # --- Environment ---
 env:
-  max_steps: 500                   # Maximum episode length
-  d_success: 0.5                   # Interception distance threshold (m)
-  fov_loss_limit: 10               # Consecutive lost-FOV steps before termination
-  init_distance_range: [10.0, 30.0]  # Initial relative distance range (m)
-  norm_distance_max: 50.0          # Max distance for observation normalization
-  norm_velocity_max: 15.0          # Max velocity for observation normalization
+  max_steps: 500
+  d_success: 0.5
+  fov_loss_limit: 10
+  init_distance_range: [10.0, 30.0]
+  norm_distance_max: 50.0
+  norm_velocity_max: 15.0
 
-# --- Reward weights ---
+# --- Depth estimator (Jacobian-based, same as Stage 2a) ---
+depth_estimator:
+  rho_init: 0.05
+  P_init: 1.0
+  Q: 0.001
+  R_base: 0.1
+  rho_min: 0.005
+  rho_max: 2.0
+  confidence_threshold: 0.01
+
+# --- Measurement noise and delay (NEW in Stage 2b) ---
+noise_delay:
+  delay: 3                         # D=3 steps = 60ms at 50Hz
+  sigma_noise: 0.03                # Std of Gaussian noise on image coords
+
+# --- DKF parameters (NEW in Stage 2b) ---
+dkf:
+  sigma_pos_process: 0.01          # Position process noise (small)
+  sigma_vel_process: 0.5           # Velocity process noise (large — target unpredictable)
+  sigma_measurement: 0.03          # Must match noise_delay.sigma_noise
+  P_init_pos: 0.1                  # Initial position uncertainty
+  P_init_vel: 1.0                  # Initial velocity uncertainty
+
+# --- Reward weights (same as Stage 2a — unchanged) ---
 reward:
-  w_image: 0.2                    # Image centering reward weight
-  w_approach: 2.0                 # Distance reduction reward weight
-  w_fov_loss: -10.0               # FOV loss penalty
-  w_boundary: -0.1                # FOV boundary proximity penalty weight
-  w_effort: -0.05                 # Control effort penalty weight — Increased from -0.01 (Stage 1b)
-  w_jerk: -0.1                    # Action jerk penalty weight — NEW in Stage 1b
-  w_intercept: 500.0              # Successful interception terminal reward
-  w_timeout: -0.2                 # Per-step time penalty
-  k1_image: 10.0                  # Sharpness of exp(-k1 * ||p_bar||^2)
+  w_image: 1.0
+  w_approach: 0.5
+  w_fov_loss: -20.0
+  w_boundary: -0.5
+  w_effort: -0.05
+  w_jerk: -0.1
+  w_intercept: 200.0
+  w_timeout: -0.05
+  k1_image: 5.0
 
 # --- Training ---
 training:
   algorithm: PPO
-  total_timesteps: 5_000_000       # Increased from 1M (harder problem)
-  n_envs: 16                      # Parallel environments for VecEnv
+  total_timesteps: 3_000_000       # Fine-tune from Stage 2a (less needed)
+  n_envs: 16
   policy: MlpPolicy
-  learning_rate: 0.0003
+  learning_rate: 0.0001            # Lower LR for fine-tuning
   n_steps: 2048
   batch_size: 64
   n_epochs: 10
@@ -82,11 +101,11 @@ training:
   ent_coef: 0.01
   log_dir: ./logs/tensorboard
   save_dir: ./logs/models
-  checkpoint_freq: 50000          # Save model every N steps
+  checkpoint_freq: 100000
 
 # --- Evaluation ---
 evaluation:
-  n_episodes: 20
+  n_episodes: 50
   deterministic: true
   save_dir: ./logs/eval
   render: false

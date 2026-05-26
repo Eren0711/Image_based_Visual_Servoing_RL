@@ -1,6 +1,5 @@
-"""
-PPO Training Script — Stage 1
-===============================
+"""PPO Training Script — Stages 1-2b
+===================================
 Trains a PPO agent on the IBVS Drone Interception environment using
 Stable-Baselines3.
 
@@ -8,12 +7,14 @@ Usage:
     python train.py                          # default config
     python train.py --config custom.yaml     # custom config
     python train.py --timesteps 2000000      # override timesteps
+    python train.py --noise-delay --dkf      # Stage 2b with wrappers
 
 Features:
     - Vectorized environments for parallel training
     - TensorBoard logging of training metrics
     - Custom callback for episode outcome tracking
     - Periodic model checkpointing
+    - Optional noise/delay + DKF wrappers (Stage 2b)
 """
 
 import os
@@ -125,17 +126,44 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def make_env(config: dict):
+def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
-        config: Full configuration dictionary.
+        config:          Full configuration dictionary.
+        use_noise_delay: If True, wrap env with NoiseDelayWrapper (Stage 2b).
+        use_dkf:         If True, wrap env with DKFWrapper (Stage 2b).
+                         Requires use_noise_delay=True.
 
     Returns:
         Callable that creates a new environment instance.
     """
     def _init():
-        return InterceptionEnv(config=config)
+        env = InterceptionEnv(config=config)
+
+        if use_noise_delay:
+            from envs.wrappers.noise_delay_wrapper import NoiseDelayWrapper
+            nd_cfg = config.get('noise_delay', {})
+            env = NoiseDelayWrapper(
+                env,
+                delay=nd_cfg.get('delay', 3),
+                sigma_noise=nd_cfg.get('sigma_noise', 0.03),
+            )
+
+        if use_dkf:
+            from envs.wrappers.dkf_wrapper import DKFWrapper
+            dkf_cfg = config.get('dkf', {})
+            nd_cfg = config.get('noise_delay', {})
+            env = DKFWrapper(
+                env,
+                delay=nd_cfg.get('delay', 3),
+                dt=config['interceptor']['dt'],
+                sigma_pos_process=dkf_cfg.get('sigma_pos_process', 0.01),
+                sigma_vel_process=dkf_cfg.get('sigma_vel_process', 0.5),
+                sigma_measurement=dkf_cfg.get('sigma_measurement', 0.03),
+            )
+
+        return env
     return _init
 
 
@@ -164,6 +192,14 @@ def main():
         '--resume', type=str, default=None,
         help='Path to a saved model to resume training from'
     )
+    parser.add_argument(
+        '--noise-delay', action='store_true', default=False,
+        help='Enable noise + delay wrapper (Stage 2b)'
+    )
+    parser.add_argument(
+        '--dkf', action='store_true', default=False,
+        help='Enable DKF wrapper on top of noise/delay (Stage 2b)'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -181,9 +217,25 @@ def main():
     ensure_stage_dirs(paths, 'tensorboard', 'models')
 
     # --- Create vectorized environment ---
+    use_noise_delay = args.noise_delay
+    use_dkf = args.dkf
+
+    if use_dkf and not use_noise_delay:
+        print("  Note: --dkf implies --noise-delay. Enabling both.")
+        use_noise_delay = True
+
+    wrapper_str = ''
+    if use_noise_delay:
+        nd_cfg = config.get('noise_delay', {})
+        wrapper_str += f"  + NoiseDelay (D={nd_cfg.get('delay', 3)}, σ={nd_cfg.get('sigma_noise', 0.03)})\n"
+    if use_dkf:
+        wrapper_str += '  + DKF\n'
+
     print(f"Creating {n_envs} parallel environments...")
+    if wrapper_str:
+        print(f"  Wrappers:\n{wrapper_str}")
     vec_env = make_vec_env(
-        make_env(config),
+        make_env(config, use_noise_delay=use_noise_delay, use_dkf=use_dkf),
         n_envs=n_envs,
     )
 

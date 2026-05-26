@@ -1,18 +1,19 @@
 """
-IBVS Drone Interception Environment — Stage 1b
+IBVS Drone Interception Environment — Stage 2a
 ================================================
 Gymnasium environment for RL-based image-guided drone interception.
 
-Stage 1a → 1b changes:
-  - Action semantics: velocity commands → acceleration commands
-  - Observation: 18-dim → 22-dim (added previous action)
-  - Reward: increased effort penalty, added jerk penalty
-  - Drone dynamics: acceleration integration (no instant velocity reversal)
+Stage 1b → 2a changes:
+  - REMOVED from observation: ground-truth distance, LOS vector, relative velocity
+  - ADDED to observation: Jacobian-based depth estimate (ẑ_c)
+  - Observation: 22-dim → 16-dim
+  - Reward: rebalanced to prioritize visual tracking over blind pursuit
+  - Reward uses PRIVILEGED ground-truth distance (not in observation)
+  - Target maneuver modes configurable (default: constant_velocity + sinusoidal)
 
-The interceptor drone observes the target's 2D projection on a pinhole camera
-image and must simultaneously:
-  1. Keep the target near the image center (minimize image-plane error)
-  2. Close the 3D relative distance to achieve physical interception
+The agent must now solve the interception task primarily from image-plane
+information and its own ego-state. Depth is estimated via the IBVS
+interaction matrix (image Jacobian), not given as ground truth.
 
 Coordinate convention: NED (z-down)
 
@@ -27,28 +28,35 @@ from gymnasium import spaces
 from models.drone_dynamics import InterceptorDrone
 from models.target_model import TargetDrone
 from models.camera_model import PinholeCamera
+from observers.interaction_matrix import InteractionMatrix
+from observers.depth_estimator import DepthEstimator
 
 
 class InterceptionEnv(gym.Env):
     """Gymnasium environment for image-based visual servoing interception.
 
-    Observation space (22-dim continuous):
+    Stage 2a: Vision-only observation with Jacobian-based depth estimation.
+
+    Observation space (16-dim continuous):
         [0:2]   p̄_x, p̄_y          — normalized image-plane error
         [2:4]   dp̄_x/dt, dp̄_y/dt  — image-plane velocity (finite diff)
         [4]     in_fov              — target visible (1) or lost (0)
-        [5]     norm_p_r            — normalized relative distance [0, 1]
+        [5]     ẑ_c (normalized)    — Jacobian-based depth ESTIMATE [0, 1]
         [6:9]   v_body              — interceptor velocity in body frame (3D)
         [9:12]  roll, pitch, yaw    — interceptor Euler angles (normalized)
-        [12:15] n_t                 — LOS unit vector in EFCS (3D)
-        [15:18] v_r                 — relative velocity (normalized, 3D)
-        [18:22] prev_action         — previous action (4D) for jerk awareness
+        [12:16] prev_action         — previous action (4D)
+
+    Removed from Stage 1b:
+        - Ground-truth relative distance (was obs[5])
+        - LOS unit vector (was obs[12:15])
+        - Ground-truth relative velocity (was obs[15:18])
 
     Action space (4-dim continuous, [-1, 1]):
         [0:3]   a_cmd       — body-frame acceleration commands (scaled by a_max)
         [3]     yaw_rate    — yaw rate command (scaled by yaw_rate_max)
 
-    Reward: weighted sum of image centering, approach, FOV penalties,
-            control effort, jerk penalty, and terminal bonuses/penalties.
+    Reward: uses PRIVILEGED ground-truth distance for approach reward
+            (standard RL practice — reward is the teacher, obs is the input).
 
     Episode termination:
         - Success: relative distance < d_success
@@ -87,6 +95,18 @@ class InterceptionEnv(gym.Env):
         self.target = TargetDrone(tgt_cfg_full)
         self.camera = PinholeCamera(cam_cfg)
 
+        # --- Depth estimator (Stage 2a: replaces ground-truth distance) ---
+        depth_cfg = config.get('depth_estimator', {})
+        self.depth_estimator = DepthEstimator(
+            rho_init=depth_cfg.get('rho_init', 0.05),       # ~20m initial guess
+            P_init=depth_cfg.get('P_init', 1.0),
+            Q=depth_cfg.get('Q', 0.001),
+            R_base=depth_cfg.get('R_base', 0.1),
+            rho_min=depth_cfg.get('rho_min', 0.005),         # max 200m
+            rho_max=depth_cfg.get('rho_max', 2.0),           # min 0.5m
+            confidence_threshold=depth_cfg.get('confidence_threshold', 0.01),
+        )
+
         # --- Environment parameters ---
         self.dt = int_cfg['dt']
         self.v_max = int_cfg['v_max']
@@ -100,11 +120,11 @@ class InterceptionEnv(gym.Env):
         self.norm_vel_max = env_cfg['norm_velocity_max']
         self.target_modes = tgt_cfg.get(
             'maneuver_modes',
-            ['constant_velocity', 'sinusoidal', 'circular', 'random_aggressive']
+            ['constant_velocity', 'sinusoidal']
         )
         # If maneuver_modes is missing or not a list, handle gracefully
         if not isinstance(self.target_modes, list):
-            self.target_modes = list(TargetDrone.MODES)
+            self.target_modes = ['constant_velocity', 'sinusoidal']
 
         # --- Reward parameters ---
         self.w_image = rwd_cfg['w_image']
@@ -118,9 +138,9 @@ class InterceptionEnv(gym.Env):
         self.k1_image = rwd_cfg['k1_image']
 
         # --- Spaces ---
-        # Observation: 22-dimensional (18 original + 4 prev action)
+        # Observation: 16-dimensional (Stage 2a: vision-only + depth estimate)
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(22,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(16,), dtype=np.float32
         )
         # Action: 4-dimensional, [-1, 1] (scaled internally)
         self.action_space = spaces.Box(
@@ -135,7 +155,9 @@ class InterceptionEnv(gym.Env):
         self._current_p_bar = np.zeros(2)
         self._in_fov = True
         self._episode_outcome = 'running'
-        self._prev_action = np.zeros(4)  # Previous action for jerk penalty
+        self._prev_action = np.zeros(4)
+        self._current_depth_est = 20.0     # Current depth estimate from Jacobian
+        self._current_yaw_rate = 0.0       # Yaw rate applied this step
 
         # Note: self.np_random is provided by gymnasium.Env and seeded
         # via super().reset(seed=...). We use it for all randomization.
@@ -168,23 +190,22 @@ class InterceptionEnv(gym.Env):
 
         Args:
             seed: Optional integer seed for reproducibility.
-            options: Optional dict (unused in Stage 1).
+            options: Optional dict (unused).
 
         Returns:
-            observation: np.ndarray (22,) — initial observation.
+            observation: np.ndarray (16,) — initial observation.
             info: dict — initial info.
         """
         super().reset(seed=seed)
-        # self.np_random is now seeded by Gymnasium's super().reset()
 
         # --- Reset counters ---
         self._step_count = 0
         self._fov_loss_counter = 0
         self._episode_outcome = 'running'
         self._prev_action = np.zeros(4)
+        self._current_yaw_rate = 0.0
 
         # --- Reset interceptor ---
-        # Start at origin with random heading
         interceptor_pos = np.zeros(3)
         interceptor_yaw = self.np_random.uniform(-np.pi, np.pi)
         self.interceptor.reset(interceptor_pos, interceptor_yaw)
@@ -198,7 +219,6 @@ class InterceptionEnv(gym.Env):
         mode = self.np_random.choice(self.target_modes)
 
         # --- Reset target ---
-        # Derive a deterministic seed for the target's internal RNG
         target_seed = int(self.np_random.integers(0, 2**31))
         self.target.reset(target_pos, target_vel, mode, seed=target_seed)
 
@@ -211,6 +231,18 @@ class InterceptionEnv(gym.Env):
         self._current_p_bar = cam_result['p_bar'].copy()
         self._in_fov = cam_result['in_fov']
         self._prev_distance = np.linalg.norm(p_r)
+
+        # --- Reset depth estimator ---
+        # Initial guess: use the ground-truth depth for initialization
+        # (the agent doesn't see this — it's just to give the estimator
+        # a reasonable starting point rather than always guessing 20m)
+        init_depth = cam_result.get('depth', 20.0)
+        if init_depth > 0.5:
+            rho_init = 1.0 / init_depth
+        else:
+            rho_init = 0.05
+        self.depth_estimator.reset(rho_init=rho_init, P_init=0.5)
+        self._current_depth_est = init_depth
 
         # --- Build initial observation ---
         obs = self._build_observation(cam_result)
@@ -237,15 +269,10 @@ class InterceptionEnv(gym.Env):
         max_attempts = 100
 
         for _ in range(max_attempts):
-            # Random distance within range
             dist = self.np_random.uniform(
                 self.init_dist_range[0], self.init_dist_range[1]
             )
 
-            # Random direction biased toward the camera's forward direction
-            # In body frame, forward = x-axis → in EFCS rotated by R_b^e
-            # Add some randomness but keep within FOV
-            # Generate a random direction in body frame, mostly forward
             body_dir = np.array([
                 self.np_random.uniform(0.5, 1.0),        # mostly forward
                 self.np_random.uniform(-0.3, 0.3),        # slight lateral
@@ -253,19 +280,14 @@ class InterceptionEnv(gym.Env):
             ])
             body_dir /= np.linalg.norm(body_dir)
 
-            # Transform to EFCS
             offset_efcs = R_be @ body_dir * dist
-
             target_pos = interceptor_pos + offset_efcs
 
-            # Verify target is within FOV
             p_r = interceptor_pos - target_pos
             cam_result = self.camera.project(p_r, R_be)
             if cam_result['in_fov'] and cam_result['fov_margin'] > 0.2:
                 break
-        # If all attempts fail, the last position is used (may be at FOV edge)
 
-        # Random target velocity
         speed = self.np_random.uniform(0.0, self.target.v_max * 0.5)
         vel_dir = self.np_random.standard_normal(3)
         vel_norm = np.linalg.norm(vel_dir)
@@ -286,7 +308,7 @@ class InterceptionEnv(gym.Env):
                     action[3] * yaw_rate_max → yaw rate command
 
         Returns:
-            observation: np.ndarray (22,)
+            observation: np.ndarray (16,)
             reward: float
             terminated: bool (success or FOV loss)
             truncated: bool (timeout)
@@ -302,6 +324,7 @@ class InterceptionEnv(gym.Env):
             action[2] * self.a_max,
             action[3] * self.yaw_rate_max,
         ])
+        self._current_yaw_rate = scaled_action[3]
 
         # --- Step interceptor ---
         self.interceptor.step(scaled_action)
@@ -322,13 +345,16 @@ class InterceptionEnv(gym.Env):
 
         current_distance = np.linalg.norm(p_r)
 
+        # --- Depth estimation via Jacobian ---
+        self._update_depth_estimate(cam_result, R_be)
+
         # --- FOV loss tracking ---
         if not self._in_fov:
             self._fov_loss_counter += 1
         else:
             self._fov_loss_counter = 0
 
-        # --- Compute reward ---
+        # --- Compute reward (uses PRIVILEGED ground-truth distance) ---
         reward = self._compute_reward(
             cam_result, current_distance, action
         )
@@ -337,18 +363,15 @@ class InterceptionEnv(gym.Env):
         terminated = False
         truncated = False
 
-        # Success: close enough to target
         if current_distance < self.d_success:
             terminated = True
             self._episode_outcome = 'success'
-            reward += self.w_intercept  # Terminal bonus
+            reward += self.w_intercept
 
-        # FOV loss: target lost for too many consecutive steps
         elif self._fov_loss_counter >= self.fov_loss_limit:
             terminated = True
             self._episode_outcome = 'fov_loss'
 
-        # Timeout
         elif self._step_count >= self.max_steps:
             truncated = True
             self._episode_outcome = 'timeout'
@@ -363,31 +386,77 @@ class InterceptionEnv(gym.Env):
 
         return obs, reward, terminated, truncated, info
 
+    def _update_depth_estimate(self, cam_result: dict,
+                                R_be: np.ndarray) -> None:
+        """Update the Jacobian-based depth estimate.
+
+        Uses the IBVS interaction matrix to estimate target depth from:
+          - Image feature velocity (finite differences)
+          - Camera ego-velocity (known from drone state)
+          - Camera angular velocity (known from yaw rate command)
+
+        The depth estimator runs a scalar Kalman filter on inverse depth
+        ρ = 1/z_c, producing a filtered estimate at each timestep.
+
+        Args:
+            cam_result: Camera projection results dict.
+            R_be: Body-to-earth rotation matrix.
+        """
+        if not self._in_fov:
+            # Target not visible — can't update depth estimate.
+            # Estimator holds its previous value (prediction only).
+            return
+
+        # Image velocity via finite differences
+        p_bar = self._current_p_bar
+        p_bar_dot = (self._current_p_bar - self._prev_p_bar) / self.dt
+
+        # Camera velocity in camera frame
+        # Angular velocity: body frame [p, q, r] = [0, 0, yaw_rate] (Stage 1-2)
+        omega_body = np.array([0.0, 0.0, self._current_yaw_rate])
+
+        v_cam, omega_cam = InteractionMatrix.compute_camera_velocity(
+            v_interceptor_efcs=self.interceptor.velocity,
+            omega_body=omega_body,
+            R_b_e=R_be,
+            R_c_b=self.camera.R_c_b,
+        )
+
+        # Update the depth estimator
+        est_result = self.depth_estimator.update(
+            p_bar=p_bar,
+            p_bar_dot=p_bar_dot,
+            v_cam=v_cam,
+            omega_cam=omega_cam,
+            v_target_cam=None,  # Assume static target (Stage 2a)
+        )
+
+        self._current_depth_est = est_result['z_hat']
+
     def _compute_reward(self, cam_result: dict, current_distance: float,
                         action: np.ndarray) -> float:
         """Compute the per-step reward.
 
-        Reward = w_image * r_image
-               + w_approach * r_approach
-               + w_fov_loss * (if lost)
-               + w_boundary * r_boundary
-               + w_effort * r_effort
-               + w_jerk * r_jerk          ← NEW in Stage 1b
-               + w_timeout
+        Stage 2a reward philosophy:
+          Priority 1: Keep target in FOV (survival)
+          Priority 2: Center target on image (tracking quality)
+          Priority 3: Approach target (mission success)
+
+        IMPORTANT: The approach reward uses PRIVILEGED ground-truth distance.
+        This is standard RL practice — the reward is the "teacher" and is
+        only used during training. The agent's policy only sees the observation.
 
         Args:
             cam_result: Camera projection results dict.
-            current_distance: Current ||p_r||.
-            action: Raw action ([-1, 1] range) for effort/jerk penalty.
+            current_distance: Current ||p_r|| (PRIVILEGED — not in obs).
+            action: Raw action ([-1, 1] range).
 
         Returns:
             float: total reward.
         """
         reward = 0.0
 
-        # --- 1. Image centering reward ---
-        # r_image = exp(-k1 * ||p̄||²)
-        # Maximal (=1) when target is at image center, decays with error
+        # --- 1. Image centering reward (PRIMARY in Stage 2a) ---
         p_bar = cam_result['p_bar']
         image_error_sq = p_bar[0] ** 2 + p_bar[1] ** 2
         if self._in_fov:
@@ -396,9 +465,7 @@ class InterceptionEnv(gym.Env):
             r_image = 0.0
         reward += self.w_image * r_image
 
-        # --- 2. Approach reward ---
-        # r_approach = -(current_distance - prev_distance)
-        # Positive when distance decreases (approaching target)
+        # --- 2. Approach reward (PRIVILEGED — uses ground-truth distance) ---
         delta_dist = current_distance - self._prev_distance
         r_approach = -delta_dist
         reward += self.w_approach * r_approach
@@ -408,48 +475,51 @@ class InterceptionEnv(gym.Env):
             reward += self.w_fov_loss
 
         # --- 4. FOV boundary penalty ---
-        # Penalize being close to FOV boundary (proportional to proximity)
         if self._in_fov:
             fov_margin = cam_result['fov_margin']
             r_boundary = max(0.0, 1.0 - fov_margin) ** 2
             reward += self.w_boundary * r_boundary
 
         # --- 5. Control effort penalty ---
-        # Penalize large accelerations to encourage efficient control
         r_effort = np.sum(action ** 2)
         reward += self.w_effort * r_effort
 
-        # --- 6. Jerk penalty (NEW in Stage 1b) ---
-        # Penalize rapid changes in action to encourage smooth control
+        # --- 6. Jerk penalty ---
         action_delta = action - self._prev_action
         r_jerk = np.sum(action_delta ** 2)
         reward += self.w_jerk * r_jerk
 
         # --- 7. Time penalty ---
-        # Encourages the agent to intercept quickly
         reward += self.w_timeout
 
         return reward
 
     def _build_observation(self, cam_result: dict) -> np.ndarray:
-        """Build the 22-dimensional observation vector.
+        """Build the 16-dimensional observation vector.
 
-        All values are normalized to [-1, 1] or [0, 1].
+        Stage 2a observation — vision-only with depth estimate:
+            [0:2]   Image-plane error (normalized by FOV)
+            [2:4]   Image-plane velocity
+            [4]     Target visibility flag
+            [5]     Depth ESTIMATE (Jacobian-based, normalized)
+            [6:9]   Body velocity (ego-state, from IMU)
+            [9:12]  Euler angles (ego-state, from IMU)
+            [12:16] Previous action
 
-        Stage 1b additions:
-            [18:22] Previous action (4D) — allows the agent to be aware of
-                    its current control state for smooth action transitions.
+        REMOVED from Stage 1b:
+            - Ground-truth relative distance
+            - LOS unit vector
+            - Relative velocity
 
         Args:
             cam_result: Camera projection results dict.
 
         Returns:
-            np.ndarray (22,) — observation vector.
+            np.ndarray (16,) — observation vector.
         """
-        obs = np.zeros(22, dtype=np.float32)
+        obs = np.zeros(16, dtype=np.float32)
 
         # [0:2] Normalized image-plane error
-        # Normalize by FOV half-angle tangent so that ±1 = FOV boundary
         fov_params = self.camera.get_fov_params()
         tan_h = fov_params['tan_half_hfov']
         tan_v = fov_params['tan_half_vfov']
@@ -457,50 +527,41 @@ class InterceptionEnv(gym.Env):
             obs[0] = np.clip(cam_result['p_bar'][0] / tan_h, -1.0, 1.0)
             obs[1] = np.clip(cam_result['p_bar'][1] / tan_v, -1.0, 1.0)
         else:
-            # If target is lost, set error to the last known direction (clipped)
             obs[0] = np.clip(self._current_p_bar[0] / tan_h, -1.0, 1.0)
             obs[1] = np.clip(self._current_p_bar[1] / tan_v, -1.0, 1.0)
 
         # [2:4] Image-plane velocity (finite differences)
         dp_bar = (self._current_p_bar - self._prev_p_bar) / self.dt
-        # Normalize by a reasonable max velocity on image plane
-        max_dp = 10.0  # Heuristic normalization constant
+        max_dp = 10.0
         obs[2] = np.clip(dp_bar[0] / max_dp, -1.0, 1.0)
         obs[3] = np.clip(dp_bar[1] / max_dp, -1.0, 1.0)
 
         # [4] Target visibility flag
         obs[4] = 1.0 if self._in_fov else 0.0
 
-        # [5] Normalized relative distance
-        p_r = self.interceptor.position - self.target.position
-        rel_dist = np.linalg.norm(p_r)
-        obs[5] = np.clip(rel_dist / self.norm_dist_max, 0.0, 1.0)
+        # [5] Depth ESTIMATE (Jacobian-based, normalized to [0, 1])
+        # This replaces the ground-truth distance that was in Stage 1b obs[5]
+        obs[5] = np.clip(self._current_depth_est / self.norm_dist_max, 0.0, 1.0)
 
-        # [6:9] Interceptor velocity in body frame (normalized)
+        # [6:9] Interceptor velocity in body frame (normalized, ego-state)
         body_vel = self.interceptor.get_body_velocity()
         obs[6:9] = np.clip(body_vel / self.v_max, -1.0, 1.0)
 
-        # [9:12] Interceptor Euler angles (normalized)
+        # [9:12] Interceptor Euler angles (normalized, ego-state from IMU)
         euler = self.interceptor.get_euler_angles()  # [roll, pitch, yaw]
-        obs[9] = np.clip(euler[0] / np.pi, -1.0, 1.0)   # roll / π
-        obs[10] = np.clip(euler[1] / np.pi, -1.0, 1.0)   # pitch / π
-        obs[11] = np.clip(euler[2] / np.pi, -1.0, 1.0)   # yaw / π
+        obs[9] = np.clip(euler[0] / np.pi, -1.0, 1.0)
+        obs[10] = np.clip(euler[1] / np.pi, -1.0, 1.0)
+        obs[11] = np.clip(euler[2] / np.pi, -1.0, 1.0)
 
-        # [12:15] LOS unit vector in EFCS (already unit, in [-1, 1])
-        n_t = cam_result['n_t']
-        obs[12:15] = np.clip(n_t, -1.0, 1.0)
-
-        # [15:18] Relative velocity (normalized)
-        v_r = self.interceptor.velocity - self.target.velocity
-        obs[15:18] = np.clip(v_r / self.norm_vel_max, -1.0, 1.0)
-
-        # [18:22] Previous action (already in [-1, 1])
-        obs[18:22] = self._prev_action.astype(np.float32)
+        # [12:16] Previous action (already in [-1, 1])
+        obs[12:16] = self._prev_action.astype(np.float32)
 
         return obs
 
     def _build_info(self, cam_result: dict) -> dict:
         """Build the info dictionary.
+
+        Includes ground-truth values for logging/evaluation (NOT in obs).
 
         Args:
             cam_result: Camera projection results dict.
@@ -519,4 +580,10 @@ class InterceptionEnv(gym.Env):
             'interceptor_pos': self.interceptor.position.copy(),
             'target_pos': self.target.position.copy(),
             'p_bar': cam_result['p_bar'].copy(),
+            # Depth estimation diagnostics
+            'depth_true': float(cam_result.get('depth', 0.0)),
+            'depth_est': float(self._current_depth_est),
+            'depth_error': float(abs(
+                self._current_depth_est - cam_result.get('depth', 0.0)
+            )),
         }
