@@ -1,15 +1,16 @@
 # =============================================================================
-# RL-Based Image-Guided Drone Interception — Stage 1 Configuration
+# RL-Based Image-Guided Drone Interception — Stage 1b Configuration
 # Reference: "High-Speed Interception Multicopter Control by IBVS"
 #            Yang, Bai, She, Quan (arXiv:2404.08296)
 #
+# Stage 1b: Acceleration-based control with velocity integration
+#   - Action = body-frame acceleration (not velocity)
+#   - Velocity integrates over time: v += a * dt
+#   - Jerk penalty to encourage smooth actions
+#   - Previous action included in observation (22-dim)
+#
 # Coordinate convention: NED (North-East-Down), z-axis points downward
 # =============================================================================
-
-# --- Experiment output layout ---
-experiment:
-  stage: stage1a
-  output_root: ./logs/stages
 
 # --- Camera parameters ---
 camera:
@@ -26,7 +27,8 @@ camera:
 
 # --- Interceptor drone ---
 interceptor:
-  v_max: 15.0                      # Max velocity per body axis (m/s) — Increased from 5.0 to catch 10 m/s target
+  v_max: 15.0                      # Max velocity per body axis (m/s)
+  a_max: 10.0                      # Max acceleration per body axis (m/s²) — NEW in Stage 1b
   yaw_rate_max: 0.7854             # Max yaw rate (rad/s) ≈ π/4
   dt: 0.02                         # Simulation timestep (s) — 50 Hz outer loop
 
@@ -54,19 +56,20 @@ env:
 
 # --- Reward weights ---
 reward:
-  w_image: 0.2                    # Image centering reward weight — Reduced from 1.0 to prevent hover stalling
-  w_approach: 2.0                 # Distance reduction reward weight — Increased from 0.5 to encourage aggressive approach
+  w_image: 0.2                    # Image centering reward weight
+  w_approach: 2.0                 # Distance reduction reward weight
   w_fov_loss: -10.0               # FOV loss penalty
   w_boundary: -0.1                # FOV boundary proximity penalty weight
-  w_effort: -0.01                 # Control effort penalty weight
-  w_intercept: 500.0              # Successful interception terminal reward — Increased from 50.0 to heavily favor completion
-  w_timeout: -0.2                 # Per-step time penalty — Increased from -0.01 to add time-to-intercept pressure
+  w_effort: -0.05                 # Control effort penalty weight — Increased from -0.01 (Stage 1b)
+  w_jerk: -0.1                    # Action jerk penalty weight — NEW in Stage 1b
+  w_intercept: 500.0              # Successful interception terminal reward
+  w_timeout: -0.2                 # Per-step time penalty
   k1_image: 10.0                  # Sharpness of exp(-k1 * ||p_bar||^2)
 
 # --- Training ---
 training:
   algorithm: PPO
-  total_timesteps: 10_000_000
+  total_timesteps: 5_000_000       # Increased from 1M (harder problem)
   n_envs: 16                      # Parallel environments for VecEnv
   policy: MlpPolicy
   learning_rate: 0.0003

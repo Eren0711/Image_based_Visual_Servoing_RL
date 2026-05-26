@@ -1,7 +1,13 @@
 """
-IBVS Drone Interception Environment — Stage 1
-===============================================
+IBVS Drone Interception Environment — Stage 1b
+================================================
 Gymnasium environment for RL-based image-guided drone interception.
+
+Stage 1a → 1b changes:
+  - Action semantics: velocity commands → acceleration commands
+  - Observation: 18-dim → 22-dim (added previous action)
+  - Reward: increased effort penalty, added jerk penalty
+  - Drone dynamics: acceleration integration (no instant velocity reversal)
 
 The interceptor drone observes the target's 2D projection on a pinhole camera
 image and must simultaneously:
@@ -26,7 +32,7 @@ from models.camera_model import PinholeCamera
 class InterceptionEnv(gym.Env):
     """Gymnasium environment for image-based visual servoing interception.
 
-    Observation space (18-dim continuous):
+    Observation space (22-dim continuous):
         [0:2]   p̄_x, p̄_y          — normalized image-plane error
         [2:4]   dp̄_x/dt, dp̄_y/dt  — image-plane velocity (finite diff)
         [4]     in_fov              — target visible (1) or lost (0)
@@ -35,13 +41,14 @@ class InterceptionEnv(gym.Env):
         [9:12]  roll, pitch, yaw    — interceptor Euler angles (normalized)
         [12:15] n_t                 — LOS unit vector in EFCS (3D)
         [15:18] v_r                 — relative velocity (normalized, 3D)
+        [18:22] prev_action         — previous action (4D) for jerk awareness
 
     Action space (4-dim continuous, [-1, 1]):
-        [0:3]   v_cmd       — body-frame velocity commands (scaled by v_max)
+        [0:3]   a_cmd       — body-frame acceleration commands (scaled by a_max)
         [3]     yaw_rate    — yaw rate command (scaled by yaw_rate_max)
 
     Reward: weighted sum of image centering, approach, FOV penalties,
-            control effort, and terminal bonuses/penalties.
+            control effort, jerk penalty, and terminal bonuses/penalties.
 
     Episode termination:
         - Success: relative distance < d_success
@@ -83,6 +90,7 @@ class InterceptionEnv(gym.Env):
         # --- Environment parameters ---
         self.dt = int_cfg['dt']
         self.v_max = int_cfg['v_max']
+        self.a_max = int_cfg['a_max']
         self.yaw_rate_max = int_cfg['yaw_rate_max']
         self.max_steps = env_cfg['max_steps']
         self.d_success = env_cfg['d_success']
@@ -104,14 +112,15 @@ class InterceptionEnv(gym.Env):
         self.w_fov_loss = rwd_cfg['w_fov_loss']
         self.w_boundary = rwd_cfg['w_boundary']
         self.w_effort = rwd_cfg['w_effort']
+        self.w_jerk = rwd_cfg.get('w_jerk', -0.1)
         self.w_intercept = rwd_cfg['w_intercept']
         self.w_timeout = rwd_cfg['w_timeout']
         self.k1_image = rwd_cfg['k1_image']
 
         # --- Spaces ---
-        # Observation: 18-dimensional, all normalized to [-1, 1]
+        # Observation: 22-dimensional (18 original + 4 prev action)
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(18,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(22,), dtype=np.float32
         )
         # Action: 4-dimensional, [-1, 1] (scaled internally)
         self.action_space = spaces.Box(
@@ -126,6 +135,7 @@ class InterceptionEnv(gym.Env):
         self._current_p_bar = np.zeros(2)
         self._in_fov = True
         self._episode_outcome = 'running'
+        self._prev_action = np.zeros(4)  # Previous action for jerk penalty
 
         # Note: self.np_random is provided by gymnasium.Env and seeded
         # via super().reset(seed=...). We use it for all randomization.
@@ -161,7 +171,7 @@ class InterceptionEnv(gym.Env):
             options: Optional dict (unused in Stage 1).
 
         Returns:
-            observation: np.ndarray (18,) — initial observation.
+            observation: np.ndarray (22,) — initial observation.
             info: dict — initial info.
         """
         super().reset(seed=seed)
@@ -171,6 +181,7 @@ class InterceptionEnv(gym.Env):
         self._step_count = 0
         self._fov_loss_counter = 0
         self._episode_outcome = 'running'
+        self._prev_action = np.zeros(4)
 
         # --- Reset interceptor ---
         # Start at origin with random heading
@@ -271,11 +282,11 @@ class InterceptionEnv(gym.Env):
 
         Args:
             action: np.ndarray (4,) in [-1, 1]. Scaled internally:
-                    action[0:3] * v_max → body velocity commands
+                    action[0:3] * a_max → body acceleration commands
                     action[3] * yaw_rate_max → yaw rate command
 
         Returns:
-            observation: np.ndarray (18,)
+            observation: np.ndarray (22,)
             reward: float
             terminated: bool (success or FOV loss)
             truncated: bool (timeout)
@@ -286,9 +297,9 @@ class InterceptionEnv(gym.Env):
 
         # --- Scale action to physical units ---
         scaled_action = np.array([
-            action[0] * self.v_max,
-            action[1] * self.v_max,
-            action[2] * self.v_max,
+            action[0] * self.a_max,
+            action[1] * self.a_max,
+            action[2] * self.a_max,
             action[3] * self.yaw_rate_max,
         ])
 
@@ -342,8 +353,9 @@ class InterceptionEnv(gym.Env):
             truncated = True
             self._episode_outcome = 'timeout'
 
-        # --- Update previous distance ---
+        # --- Update previous state ---
         self._prev_distance = current_distance
+        self._prev_action = action.copy()
 
         # --- Build observation and info ---
         obs = self._build_observation(cam_result)
@@ -360,12 +372,13 @@ class InterceptionEnv(gym.Env):
                + w_fov_loss * (if lost)
                + w_boundary * r_boundary
                + w_effort * r_effort
+               + w_jerk * r_jerk          ← NEW in Stage 1b
                + w_timeout
 
         Args:
             cam_result: Camera projection results dict.
             current_distance: Current ||p_r||.
-            action: Raw action ([-1, 1] range) for effort penalty.
+            action: Raw action ([-1, 1] range) for effort/jerk penalty.
 
         Returns:
             float: total reward.
@@ -402,28 +415,38 @@ class InterceptionEnv(gym.Env):
             reward += self.w_boundary * r_boundary
 
         # --- 5. Control effort penalty ---
-        # Small penalty for large actions to encourage smooth control
+        # Penalize large accelerations to encourage efficient control
         r_effort = np.sum(action ** 2)
         reward += self.w_effort * r_effort
 
-        # --- 6. Time penalty ---
+        # --- 6. Jerk penalty (NEW in Stage 1b) ---
+        # Penalize rapid changes in action to encourage smooth control
+        action_delta = action - self._prev_action
+        r_jerk = np.sum(action_delta ** 2)
+        reward += self.w_jerk * r_jerk
+
+        # --- 7. Time penalty ---
         # Encourages the agent to intercept quickly
         reward += self.w_timeout
 
         return reward
 
     def _build_observation(self, cam_result: dict) -> np.ndarray:
-        """Build the 18-dimensional observation vector.
+        """Build the 22-dimensional observation vector.
 
         All values are normalized to [-1, 1] or [0, 1].
+
+        Stage 1b additions:
+            [18:22] Previous action (4D) — allows the agent to be aware of
+                    its current control state for smooth action transitions.
 
         Args:
             cam_result: Camera projection results dict.
 
         Returns:
-            np.ndarray (18,) — observation vector.
+            np.ndarray (22,) — observation vector.
         """
-        obs = np.zeros(18, dtype=np.float32)
+        obs = np.zeros(22, dtype=np.float32)
 
         # [0:2] Normalized image-plane error
         # Normalize by FOV half-angle tangent so that ±1 = FOV boundary
@@ -470,6 +493,9 @@ class InterceptionEnv(gym.Env):
         # [15:18] Relative velocity (normalized)
         v_r = self.interceptor.velocity - self.target.velocity
         obs[15:18] = np.clip(v_r / self.norm_vel_max, -1.0, 1.0)
+
+        # [18:22] Previous action (already in [-1, 1])
+        obs[18:22] = self._prev_action.astype(np.float32)
 
         return obs
 

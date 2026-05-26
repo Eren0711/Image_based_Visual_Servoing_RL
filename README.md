@@ -105,7 +105,7 @@ Trains a PPO agent across multiple vectorized environments using the hyperparame
 python train.py
 
 # Train and save outputs under logs/stages/stage1a/
-python train.py --stage stage1a --timesteps 1000000 --n-envs 16
+python train.py --stage stage1b --timesteps 5000000 --n-envs 16
 
 # Train with an overridden custom configuration
 python train.py --config config.yaml
@@ -168,13 +168,13 @@ Generates high-performance interactive or file-based synchronized animations sho
 python visualize.py --stage stage1a --episodes 10 --episode best
 
 # Export a high-resolution animation to an MP4 video file at 30 FPS
-python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.mp4 --fps 30
+python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.mp4 --fps 5
 
 # Export the animation as a GIF
-python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.gif --skip 3
+python visualize.py --stage stage1b --save logs/stages/stage1b/videos/replay_best.gif --skip 3
 
 # Run a 100-episode evaluation and save a static aggregate performance dashboard
-python visualize.py --stage stage1a --episodes 100 --save-dashboard logs/stages/stage1a/eval/dashboard.png
+python visualize.py --stage stage1b --episodes 100 --save-dashboard logs/stages/stage1b/eval/dashboard.png
 ```
 
 #### CLI Parameters:

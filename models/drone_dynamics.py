@@ -1,9 +1,13 @@
 """
-Interceptor Drone Kinematic Model — Stage 1
-============================================
-Simplified kinematic model for the interceptor multicopter.
-The agent commands body-frame velocities directly; pitch/roll are implicit
-(heading-only orientation for Stage 1).
+Interceptor Drone Kinematic Model — Stage 1b
+=============================================
+Acceleration-based kinematic model for the interceptor multicopter.
+The agent commands body-frame accelerations; velocity integrates over time,
+preventing instantaneous velocity reversals (eliminates zigzag behavior).
+
+Stage 1a → 1b change:
+    Before: action = velocity command → velocity = v_cmd (instant)
+    After:  action = acceleration command → velocity += a_cmd * dt (integrated)
 
 Coordinate convention: NED (z-down)
   - x: North (forward)
@@ -11,7 +15,7 @@ Coordinate convention: NED (z-down)
   - z: Down
 
 Reference: Section II-A.2 of arXiv:2404.08296
-  Full 6-DOF model (Eq. 1) is simplified here to kinematic velocity control.
+  Full 6-DOF model (Eq. 1) is simplified here to kinematic acceleration control.
   The rotation matrix R_b^e ∈ SO(3) is maintained via scipy Rotation to
   guarantee orthogonality at all times.
 """
@@ -21,17 +25,23 @@ from scipy.spatial.transform import Rotation
 
 
 class InterceptorDrone:
-    """Simplified kinematic interceptor drone model.
+    """Acceleration-based kinematic interceptor drone model.
 
     State:
-        position  : np.ndarray (3,) — position in EFCS [x_e, y_e, z_e]
-        velocity  : np.ndarray (3,) — velocity in EFCS [vx_e, vy_e, vz_e]
-        R_b_e     : Rotation        — body-to-earth rotation (scipy Rotation)
-        yaw       : float           — heading angle (rad)
+        position    : np.ndarray (3,) — position in EFCS [x_e, y_e, z_e]
+        velocity    : np.ndarray (3,) — velocity in EFCS [vx_e, vy_e, vz_e]
+        body_vel    : np.ndarray (3,) — velocity in body frame [vx_b, vy_b, vz_b]
+        R_b_e       : Rotation        — body-to-earth rotation (scipy Rotation)
+        yaw         : float           — heading angle (rad)
 
     Action (body frame):
-        [v_x_cmd, v_y_cmd, v_z_cmd, yaw_rate_cmd]
+        [a_x_cmd, a_y_cmd, a_z_cmd, yaw_rate_cmd]
         Each component is clipped to physical limits.
+
+    Physics:
+        body_vel(t+1) = clip(body_vel(t) + a_cmd * dt, -v_max, v_max)
+        velocity(t+1) = R_b^e @ body_vel(t+1)
+        position(t+1) = position(t) + velocity(t+1) * dt
     """
 
     def __init__(self, config: dict):
@@ -39,15 +49,17 @@ class InterceptorDrone:
 
         Args:
             config: Dictionary with keys from config.yaml['interceptor'].
-                Required: v_max, yaw_rate_max, dt
+                Required: v_max, a_max, yaw_rate_max, dt
         """
         self.v_max = config['v_max']
+        self.a_max = config['a_max']
         self.yaw_rate_max = config['yaw_rate_max']
         self.dt = config['dt']
 
         # State variables (initialized in reset)
         self.position = np.zeros(3)
         self.velocity = np.zeros(3)
+        self._body_vel = np.zeros(3)  # Persistent body-frame velocity
         self.yaw = 0.0
         self.pitch = 0.0
         self.roll = 0.0
@@ -63,55 +75,67 @@ class InterceptorDrone:
         """
         self.position = np.array(position, dtype=np.float64)
         self.velocity = np.zeros(3)
+        self._body_vel = np.zeros(3)
         self.yaw = float(yaw)
         self.pitch = 0.0
         self.roll = 0.0
         self._update_rotation()
 
     def step(self, action: np.ndarray) -> None:
-        """Integrate one timestep given body-frame velocity commands.
+        """Integrate one timestep given body-frame acceleration commands.
 
-        The action is interpreted as velocity commands in the body frame:
-          action[0]: v_x — forward velocity (body x-axis)
-          action[1]: v_y — lateral velocity (body y-axis, rightward)
-          action[2]: v_z — vertical velocity (body z-axis, downward in NED)
+        The action is interpreted as acceleration commands in the body frame:
+          action[0]: a_x — forward acceleration (body x-axis)
+          action[1]: a_y — lateral acceleration (body y-axis, rightward)
+          action[2]: a_z — vertical acceleration (body z-axis, downward in NED)
           action[3]: yaw_rate — heading rate (rad/s, positive = turn right)
 
         Integration:
-          1. Clip actions to physical limits
-          2. Update yaw angle
-          3. Rebuild rotation matrix R_b^e
-          4. Transform body velocity → EFCS velocity
-          5. Update position via Euler integration
+          1. Clip acceleration to physical limits
+          2. Integrate body velocity: v_body += a_cmd * dt
+          3. Clip body velocity to v_max
+          4. Update yaw angle
+          5. Rebuild rotation matrix R_b^e
+          6. Transform body velocity → EFCS velocity
+          7. Update position via Euler integration
 
         Args:
-            action: np.ndarray (4,) — [v_x, v_y, v_z, yaw_rate] in body frame.
+            action: np.ndarray (4,) — [a_x, a_y, a_z, yaw_rate] in body frame.
         """
         action = np.asarray(action, dtype=np.float64)
 
-        # --- 1. Clip to physical limits ---
-        v_cmd_body = np.clip(action[:3], -self.v_max, self.v_max)
+        # --- 1. Clip acceleration to physical limits ---
+        a_cmd = np.clip(action[:3], -self.a_max, self.a_max)
         yaw_rate = np.clip(action[3], -self.yaw_rate_max, self.yaw_rate_max)
 
-        # --- 2. Update yaw angle ---
+        # --- 2. Integrate body velocity ---
+        # v_body(t+1) = v_body(t) + a_cmd * dt
+        self._body_vel = self._body_vel + a_cmd * self.dt
+
+        # --- 3. Clip to maximum speed ---
+        speed = np.linalg.norm(self._body_vel)
+        if speed > self.v_max:
+            self._body_vel = self._body_vel * (self.v_max / speed)
+
+        # --- 4. Update yaw angle ---
         self.yaw += yaw_rate * self.dt
         # Wrap yaw to [-π, π]
         self.yaw = (self.yaw + np.pi) % (2 * np.pi) - np.pi
 
-        # --- 3. Rebuild rotation matrix ---
+        # --- 5. Rebuild rotation matrix ---
         self._update_rotation()
 
-        # --- 4. Transform body velocity to EFCS ---
+        # --- 6. Transform body velocity to EFCS ---
         R_be = self.get_rotation_matrix()  # 3×3 rotation body → earth
-        self.velocity = R_be @ v_cmd_body
+        self.velocity = R_be @ self._body_vel
 
-        # --- 5. Euler integration of position ---
+        # --- 7. Euler integration of position ---
         self.position = self.position + self.velocity * self.dt
 
     def _update_rotation(self) -> None:
         """Rebuild R_b^e from current Euler angles.
 
-        In Stage 1, only yaw is actively controlled. Pitch and roll are zero
+        In Stage 1b, only yaw is actively controlled. Pitch and roll are zero
         (kinematic simplification). In later stages, these can be derived from
         the velocity/acceleration vector for a more realistic model.
 
@@ -142,10 +166,11 @@ class InterceptorDrone:
     def get_body_velocity(self) -> np.ndarray:
         """Return the current velocity in the body frame.
 
-        v_b = (R_b^e)^T @ v_e = R_e^b @ v_e
+        In Stage 1b, this is the persistent integrated body velocity,
+        NOT simply (R_b^e)^T @ v_e (which would be equivalent in the
+        absence of numerical drift).
         """
-        R_eb = self._rotation.inv().as_matrix()
-        return R_eb @ self.velocity
+        return self._body_vel.copy()
 
     def get_state(self) -> dict:
         """Return the full state as a dictionary.
