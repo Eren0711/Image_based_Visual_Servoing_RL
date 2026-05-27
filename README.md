@@ -105,7 +105,7 @@ Trains a PPO agent across multiple vectorized environments using the hyperparame
 python train.py
 
 # Train and save outputs under logs/stages/stage1a/
-python train.py --stage stage1b --timesteps 5000000 --n-envs 16
+python train.py --stage stage3a --timesteps 15000000 --n-envs 16
 
 # Train with an overridden custom configuration
 python train.py --config config.yaml
@@ -168,13 +168,13 @@ Generates high-performance interactive or file-based synchronized animations sho
 python visualize.py --stage stage1a --episodes 10 --episode best
 
 # Export a high-resolution animation to an MP4 video file at 30 FPS
-python visualize.py --stage stage1a --save logs/stages/stage1a/videos/replay_best.mp4 --fps 5
+python visualize.py --stage stage3a --save logs/stages/stage3a/videos/replay_best.mp4 --fps 10
 
 # Export the animation as a GIF
-python visualize.py --stage stage1b --save logs/stages/stage1b/videos/replay_best.gif --skip 3
+python visualize.py --stage stage3a --save logs/stages/stage3a/videos/replay_best.gif --skip 3
 
 # Run a 100-episode evaluation and save a static aggregate performance dashboard
-python visualize.py --stage stage1b --episodes 100 --save-dashboard logs/stages/stage1b/eval/dashboard.png
+python visualize.py --stage stage3a --episodes 100 --save-dashboard logs/stages/stage3a/eval/dashboard.png
 ```
 
 #### CLI Parameters:
@@ -205,3 +205,6 @@ The target model in `models/target_model.py` dynamically selects one of four agg
 2. **Constant Velocity (`constant_velocity`)**: The target travels along a straight vector with a random heading and pitch at up to `target.v_max`.
 3. **Sinusoidal Evasion (`sinusoidal`)**: The target executes high-frequency, aggressive snake-like maneuvers perpendicular to its forward axis.
 4. **Aggressive Orbit (`circular`)**: The target performs tight, high-G circular banks at orbital speeds to break visual lock.
+
+
+ 

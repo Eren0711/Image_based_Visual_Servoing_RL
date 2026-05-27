@@ -170,6 +170,13 @@ class DisturbanceKalmanFilter:
         self.x_hat = self.F @ self.x_hat
         self.P = self.F @ self.P @ self.F.T + self.Q
 
+        # Clamp covariance to prevent overflow
+        self.P = np.clip(self.P, -1e6, 1e6)
+
+        # Clamp state to prevent runaway estimates
+        self.x_hat[:2] = np.clip(self.x_hat[:2], -5.0, 5.0)   # image pos bound
+        self.x_hat[2:] = np.clip(self.x_hat[2:], -50.0, 50.0)  # image vel bound
+
         # Store prediction in buffer
         self._state_buffer.append(self.x_hat.copy())
         self._cov_buffer.append(self.P.copy())
@@ -232,7 +239,22 @@ class DisturbanceKalmanFilter:
 
         # Covariance update (Joseph form for numerical stability)
         I_KH = np.eye(4) - K @ self.H
-        self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
+        P_new = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
+
+        # Guard against numerical overflow / NaN in covariance
+        if np.any(np.isnan(P_new)) or np.any(np.isinf(P_new)):
+            # Reset to predicted covariance (skip this update)
+            pass
+        else:
+            self.P = np.clip(P_new, -1e6, 1e6)
+
+        # Clamp state
+        self.x_hat[:2] = np.clip(self.x_hat[:2], -5.0, 5.0)
+        self.x_hat[2:] = np.clip(self.x_hat[2:], -50.0, 50.0)
+
+        # Guard state NaN
+        if np.any(np.isnan(self.x_hat)):
+            self.x_hat = np.zeros(4)
 
         # Update buffer with corrected state
         if len(self._state_buffer) > 0:

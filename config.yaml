@@ -1,17 +1,13 @@
 # =============================================================================
-# RL-Based Image-Guided Drone Interception — Stage 2b Configuration
+# RL-Based Image-Guided Drone Interception — Stage 3a Configuration
 # Reference: "High-Speed Interception Multicopter Control by IBVS"
 #            Yang, Bai, She, Quan (arXiv:2404.08296)
 #
-# Stage 2b: Measurement Noise + Delay + DKF State Observer
-#   - Adds camera processing delay (D steps) to image measurements
-#   - Adds Gaussian noise to detected image coordinates
-#   - DKF filters noisy/delayed measurements for the agent
-#   - Warm-start from Stage 2a policy (same observation structure)
-#   - Three experiment conditions:
-#     (1) Stage 2a baseline (no noise/delay)
-#     (2) Noise+delay WITHOUT DKF
-#     (3) Noise+delay WITH DKF
+# Stage 3a: First-Order Inertia + Attitude-Camera Coupling
+#   - Drone velocity responds with τ=0.2s time constant (realistic lag)
+#   - Pitch/roll derived from acceleration → camera tilts with maneuvers
+#   - Attitude stability penalty added to reward
+#   - FRESH training (dynamics fundamentally changed)
 #
 # Coordinate convention: NED (North-East-Down), z-axis points downward
 # =============================================================================
@@ -29,6 +25,15 @@ interceptor:
   a_max: 10.0
   yaw_rate_max: 0.7854             # ~π/4
   dt: 0.02                         # 50 Hz
+  # Stage 3a: inertia parameters
+  tau_velocity: 0.15               # First-order velocity time constant (s)
+                                   # τ=0.15s → braking distance from v_max ≈ 2.25 m
+                                   # Must satisfy v_max * τ < d_success for closure
+  tau_yaw_rate: 0.10               # First-order lag on yaw rate command (s)
+                                   # Prevents the bang-bang yaw oscillation seen
+                                   # in the v1 Stage 3a policy.
+  max_pitch_deg: 35.0              # Maximum pitch angle (deg), physically realistic
+  max_roll_deg:  35.0              # Maximum roll angle (deg)
 
 # --- Target drone ---
 target:
@@ -44,13 +49,16 @@ target:
 # --- Environment ---
 env:
   max_steps: 500
-  d_success: 0.5
+  d_success: 2.0                   # Was 0.5 — physically achievable given the
+                                   # 2.25 m braking distance at v_max=15, τ=0.15.
+                                   # 2.0 m miss distance is realistic for ~30cm
+                                   # drone-on-drone visual interception.
   fov_loss_limit: 10
   init_distance_range: [10.0, 30.0]
   norm_distance_max: 50.0
   norm_velocity_max: 15.0
 
-# --- Depth estimator (Jacobian-based, same as Stage 2a) ---
+# --- Depth estimator ---
 depth_estimator:
   rho_init: 0.05
   P_init: 1.0
@@ -60,38 +68,53 @@ depth_estimator:
   rho_max: 2.0
   confidence_threshold: 0.01
 
-# --- Measurement noise and delay (NEW in Stage 2b) ---
+# --- Measurement noise and delay (Stage 2b, carried forward) ---
 noise_delay:
-  delay: 3                         # D=3 steps = 60ms at 50Hz
-  sigma_noise: 0.03                # Std of Gaussian noise on image coords
+  delay: 3
+  sigma_noise: 0.03
 
-# --- DKF parameters (NEW in Stage 2b) ---
+# --- DKF parameters ---
 dkf:
-  sigma_pos_process: 0.01          # Position process noise (small)
-  sigma_vel_process: 0.5           # Velocity process noise (large — target unpredictable)
-  sigma_measurement: 0.03          # Must match noise_delay.sigma_noise
-  P_init_pos: 0.1                  # Initial position uncertainty
-  P_init_vel: 1.0                  # Initial velocity uncertainty
+  sigma_pos_process: 0.01
+  sigma_vel_process: 0.5
+  sigma_measurement: 0.03
+  P_init_pos: 0.1
+  P_init_vel: 1.0
 
-# --- Reward weights (same as Stage 2a — unchanged) ---
+# --- Reward weights ---
+# Stage 3a-v2 rebalance (Option B fixes):
+#   Root cause of v1 failure (2% deterministic success, 50% FOV loss):
+#   image-centering reward dominated closure reward, so the policy
+#   learned to fly past the target while keeping it framed.
+#
+#   Changes from v1:
+#     w_image:        1.0  →  0.4   (de-emphasize pure tracking)
+#     w_approach:     0.6  →  2.0   (make closure progress dominate)
+#     w_dist_penalty: NEW  → -0.02  (per-step anti-loiter pressure)
 reward:
-  w_image: 1.0
-  w_approach: 0.5
+  w_image:        0.4
+  w_approach:     2.0
+  w_dist_penalty: -0.02        # NEW: per-step penalty ∝ current distance
+                               # Computed against current_distance / norm_distance_max,
+                               # so at 30m: -0.012/step; at d_success: ≈0.
+                               # Closes the reward-hacking loophole where
+                               # holding station with target in frame paid forever.
   w_fov_loss: -20.0
   w_boundary: -0.5
-  w_effort: -0.05
-  w_jerk: -0.1
+  w_effort:   -0.05
+  w_jerk:     -0.05
+  w_attitude: -0.1
   w_intercept: 200.0
-  w_timeout: -0.05
-  k1_image: 5.0
+  w_timeout:  -0.05
+  k1_image:   5.0
 
 # --- Training ---
 training:
   algorithm: PPO
-  total_timesteps: 3_000_000       # Fine-tune from Stage 2a (less needed)
+  total_timesteps: 15_000_000    # Fresh training — harder problem
   n_envs: 16
   policy: MlpPolicy
-  learning_rate: 0.0001            # Lower LR for fine-tuning
+  learning_rate: 0.0003          # Standard LR (fresh training)
   n_steps: 2048
   batch_size: 64
   n_epochs: 10
@@ -101,7 +124,10 @@ training:
   ent_coef: 0.01
   log_dir: ./logs/tensorboard
   save_dir: ./logs/models
-  checkpoint_freq: 100000
+  checkpoint_freq: 200000
+  # Deterministic eval cadence (Stage 3a-v2 lesson: trust det-eval, not stochastic)
+  eval_freq: 1000000          # run det-eval every N training steps
+  eval_n_episodes: 20         # episodes per det-eval run (~20s wall-time)
 
 # --- Evaluation ---
 evaluation:

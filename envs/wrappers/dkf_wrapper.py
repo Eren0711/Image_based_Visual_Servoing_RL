@@ -58,26 +58,23 @@ class DKFWrapper(gym.ObservationWrapper):
             sigma_measurement=sigma_measurement,
         )
 
-        # FOV normalization params (cached)
-        self._fov_params = None
+        # Cache FOV params at construction time (env.unwrapped is always the base env)
+        unwrapped = env.unwrapped
+        if hasattr(unwrapped, 'camera'):
+            self._fov_params = unwrapped.camera.get_fov_params()
+        else:
+            self._fov_params = None
 
     def reset(self, **kwargs):
         """Reset the wrapper, DKF, and underlying environment."""
         obs, info = self.env.reset(**kwargs)
 
-        # Cache FOV params for denormalization/renormalization
-        if hasattr(self.env, 'camera'):
-            self._fov_params = self.env.camera.get_fov_params()
-        elif hasattr(self.env, 'unwrapped') and hasattr(self.env.unwrapped, 'camera'):
-            self._fov_params = self.env.unwrapped.camera.get_fov_params()
-
-        # Initialize DKF with the initial (possibly noisy) observation
-        # Denormalize from FOV-normalized to raw p_bar for DKF
-        p_bar_init = self._denormalize_p_bar(obs[0:2])
-        self.dkf.reset(p_bar_init=p_bar_init)
-
         # Mark info
         info['dkf_active'] = True
+
+        # Initialize DKF with the initial (possibly noisy) observation
+        p_bar_init = self._denormalize_p_bar(obs[0:2])
+        self.dkf.reset(p_bar_init=p_bar_init)
 
         return self.observation(obs), info
 

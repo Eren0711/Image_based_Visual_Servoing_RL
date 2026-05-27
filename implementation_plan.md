@@ -2,7 +2,20 @@
 
 > **Project**: RL-Based Image-Guided High-Speed Drone Interception via IBVS  
 > **Reference**: Yang, Bai, She, Quan — arXiv:2404.08296  
-> **Last updated**: 2026-05-24  
+> **Last updated**: 2026-05-27  
+
+## Progress Snapshot
+
+- [x] **Stage 1a** — Pipeline validation (kinematic + full obs)
+- [x] **Stage 1b** — Action smoothing, acceleration commands, prev-action in obs
+- [x] **Stage 2a** — Vision-only obs (ground-truth distance/LOS/relative-vel removed)
+- [x] **Stage 2b** — Noise + delay wrapper + DKF observer (wrappers wired in `train.py`)
+- [ ] **Stage 3a-v1** — ❌ Attempted (15M steps), failed: 2% deterministic success, 50% FOV loss, 48% timeout. Reward hacking + bang-bang yaw + infeasible braking. See "Lessons from Stage 3a v1" below.
+- [ ] **Stage 3a-v2** — Re-train with v1 fixes applied (clean obs, no sensor noise) — **NEXT**
+- [ ] **Stage 3a-noisy** — Re-introduce 2b's noise+delay+DKF on top of working 3a-v2
+- [ ] Stage 3b, 4a, 4b — future
+
+> **Decision (2026-05-27): Option B — decouple stages.** Stage 3a was originally specified as "inertia *on top of* 2b's noise/delay/DKF" but was implemented and trained on clean observations. Rather than re-add sensor noise concurrently with the 3a fixes (which violates the plan's "one change per stage" principle), we explicitly split 3a into a clean-obs sub-stage (`3a-v2`) and a noisy sub-stage (`3a-noisy`).
 
 ---
 
@@ -51,18 +64,20 @@ We will build this incrementally. **Each stage introduces exactly ONE new challe
 
 ```mermaid
 graph LR
-    A["Stage 1a ✅<br/>Kinematic + Full Obs"] --> B["Stage 1b<br/>+ Action Smoothing"]
-    B --> C["Stage 2a<br/>− Ground Truth Obs"]
-    C --> D["Stage 2b<br/>+ Noise & Delay + DKF"]
-    D --> E["Stage 3a<br/>+ Simplified Dynamics"]
-    E --> F["Stage 3b<br/>+ Full 6-DOF Dynamics"]
+    A["Stage 1a ✅<br/>Kinematic + Full Obs"] --> B["Stage 1b ✅<br/>+ Action Smoothing"]
+    B --> C["Stage 2a ✅<br/>− Ground Truth Obs"]
+    C --> D["Stage 2b ✅<br/>+ Noise & Delay + DKF"]
+    D --> E1["Stage 3a-v1 ❌<br/>Inertia (clean obs)<br/>2% success — failed"]
+    E1 --> E2["Stage 3a-v2 ⏳<br/>Inertia + reward fix<br/>+ yaw lag (clean obs)"]
+    E2 --> E3["Stage 3a-noisy<br/>+ Re-add 2b's noise/delay/DKF"]
+    E3 --> F["Stage 3b<br/>+ Full 6-DOF Dynamics"]
     F --> G["Stage 4a<br/>+ CBF-HardNet Safety"]
     G --> H["Stage 4b<br/>+ Realistic Perception"]
 ```
 
 ---
 
-## Stage 1b: Action Smoothing and Realistic Control Constraints
+## Stage 1b: Action Smoothing and Realistic Control Constraints ✅
 
 ### Goal
 Eliminate the zigzag behavior by making the agent's actions physically plausible, while keeping the kinematic model.
@@ -114,7 +129,7 @@ r_effort = -w_effort * ||a_t||²           (increased from -0.01 to -0.05)
 
 ---
 
-## Stage 2a: Vision-Only Observation (Remove Ground-Truth Cheats)
+## Stage 2a: Vision-Only Observation (Remove Ground-Truth Cheats) ✅
 
 ### Goal
 Force the agent to solve the actual visual servoing problem by removing ground-truth 3D information from the observation.
@@ -167,7 +182,7 @@ This is purer but much harder to tune and may not converge.
 
 ---
 
-## Stage 2b: Measurement Noise, Delay, and DKF State Observer
+## Stage 2b: Measurement Noise, Delay, and DKF State Observer ✅
 
 ### Goal
 Add realistic sensor imperfections and a Disturbance Kalman Filter to handle them.
@@ -233,46 +248,100 @@ Stage 2b (noise+delay, WITH DKF)      ?               ?          ← expect reco
 
 ---
 
-## Stage 3a: Simplified Dynamics with Inertia (First-Order Response)
+## Stage 3a-v1: Simplified Dynamics with Inertia — ATTEMPTED, FAILED ❌
+
+### Goal (as designed)
+Introduce physical realism into the drone's motion without the full complexity of 6-DOF dynamics — the drone has mass and cannot change velocity instantaneously, and camera pointing couples to attitude.
+
+### What was implemented
+- First-order velocity response: `v̇_body = (1/τ)(v_cmd - v_body)` with τ=0.20s
+- Pitch/roll derived from commanded acceleration: `pitch = -arctan(a_x/g)`, `roll = arctan(a_y/g)`, clamped to ±35°
+- Camera coupling: pitched body rotates the camera frame, target shifts on image plane
+- Obs upgraded to 16-dim with normalized pitch/roll
+- `w_attitude = -0.1` penalty on tilt magnitude
+- Trained fresh for 15M timesteps on clean observations (no noise/delay/DKF wrappers attached)
+
+### Observed outcome (50-episode deterministic eval)
+| Metric | Result | Plan target |
+|---|---|---|
+| Success rate (deterministic) | **2% (1/50)** | >50% |
+| FOV-loss rate | 50% | low |
+| Timeout rate | 48% | low |
+| Mean image error | 0.16 | low |
+| TensorBoard `success_rate` during training | ~30% | — |
+
+The 15× gap between in-training stochastic `success_rate` (~30%) and deterministic eval (2%) showed the policy was riding exploration noise, not converged.
+
+### Lessons from Stage 3a v1
+
+1. **Reward hacking dominated learning.** `w_image=1.0` paid up to +1.0/step for keeping the target framed. `w_approach=0.6` × typical Δd ≈ ±0.1m gave ≤±0.06/step. The optimal policy under those weights was *fly past the target and orbit at roughly constant distance* — tracking reward harvested indefinitely, Δd averaging to zero. Half the timeouts ended at <0.1 image error and 30–60m distance, confirming this.
+2. **Bang-bang yaw came back.** Stage 1b's smoothing applied to translational velocity (via τ) but **not to the yaw rate command**. `self.yaw += yaw_rate * dt` with no lag meant the policy could flip yaw_rate ±1 every step at zero physical cost, producing the high-frequency oscillation visible in action plots.
+3. **The success radius was physically infeasible.** With v_max=15 m/s and τ=0.20s, the minimum braking distance is ≈ v_max · τ = 3.0m. `d_success=0.5m` was unreachable from anywhere near max speed — no policy could succeed without first slowing to <2.5 m/s, which the reward structure did not encourage.
+4. **Sensor noise/delay was silently dropped.** The plan specified 3a as "inertia on top of 2b's noise+delay+DKF," but `train.py --stage stage3a` was launched without `--noise-delay --dkf`. The DKF wrappers in `train.py:144-164` only attach when those CLI flags are present.
+5. **Training metrics lied.** `InterceptionMetricsCallback` logs *stochastic-policy* rollouts. Without periodic deterministic eval, an over-confident TensorBoard curve masked the real failure for 15M steps.
+
+---
+
+## Stage 3a-v2: Inertia + Fixed Reward + Yaw Lag (NEXT) ⏳
 
 ### Goal
-Introduce physical realism into the drone's motion without the full complexity of 6-DOF dynamics. The drone now has mass and cannot change velocity instantaneously.
+Re-train Stage 3a on **clean observations** with the v1 root-cause fixes applied, isolating inertia + attitude-camera coupling as the only new challenge. Defer sensor noise to `3a-noisy`.
 
-### What changes
+### Changes applied (2026-05-27)
 
-**First-order velocity response model**:
-```
-v̇_body = (1/τ) * (v_cmd - v_body)        τ = 0.1-0.3s (time constant)
-```
+| Component | v1 | v2 | Rationale |
+|---|---|---|---|
+| `interceptor.tau_velocity` | 0.20 s | **0.15 s** | Reduces v_max braking distance from 3.0 m → 2.25 m |
+| `interceptor.tau_yaw_rate` | — (none) | **0.10 s** (new) | Closes the bang-bang yaw loophole |
+| `env.d_success` | 0.5 m | **2.0 m** | Physically achievable; realistic miss distance for drone-vs-drone visual interception |
+| `reward.w_image` | 1.0 | **0.4** | De-emphasize pure tracking |
+| `reward.w_approach` | 0.6 | **2.0** | Make closure progress dominate |
+| `reward.w_dist_penalty` | — | **−0.02** (new) | Per-step penalty `∝ (d / norm_d_max)`. Closes the orbit-at-constant-distance loophole. |
 
-This means:
-- Commanding v_cmd = 15 m/s from rest takes ~0.3s to reach (not instant)
-- Reversing direction takes ~0.6s (decelerate + accelerate)
-- The drone has realistic "sluggishness"
+All other 3a-v1 design choices (acceleration commands, pitch/roll coupling, `w_attitude=-0.1`, attitude in obs) are preserved.
 
-**Simplified attitude coupling** (pitch tilts with acceleration):
-```
-pitch_approx = -arctan(a_forward / g)     # pitching forward when accelerating
-roll_approx  = arctan(a_lateral / g)      # banking when turning
-```
-
-> [!IMPORTANT]
-> This is where pitch-camera coupling first appears. When the drone accelerates forward, it pitches nose-down, which tilts the camera downward. The agent must learn to manage this tradeoff — aggressive acceleration improves closure rate but risks losing the target from the camera FOV.
-
-### Observation addition
-- Add `pitch` and `roll` (derived from acceleration) to the observation
-- The agent needs to know its current tilt to predict where the camera is pointing
+### Files modified for v2
+| File | Change |
+|---|---|
+| [config.yaml](config.yaml) | `tau_velocity`, new `tau_yaw_rate`, `d_success`, reward block (`w_image`, `w_approach`, new `w_dist_penalty`) |
+| [models/drone_dynamics.py](models/drone_dynamics.py) | New `_yaw_rate` state + first-order lag in `step()` |
+| [envs/interception_env.py](envs/interception_env.py) | Read `w_dist_penalty` from config; new reward term in `_compute_reward()` |
 
 ### Training strategy
-- **Fresh training** (dynamics are fundamentally different)
-- Start with τ = 0.3s (easier), reduce to τ = 0.15s after convergence
-- May need to reduce interceptor v_max to 10-12 m/s (the speed advantage was compensating for lack of dynamics)
-- Train for 10-20M timesteps (significantly harder)
+- **Fresh training** — v1 policy is harmful, do not warm-start.
+- Train for 10–20M timesteps. Re-evaluate every 2M steps with `python eval.py --stage stage3a` (deterministic, 50 episodes) — do **not** trust in-training stochastic success rate alone.
+- If success rate plateaus <30% by 6M steps, stop and re-diagnose before burning more compute.
+
+### Success criterion (v2)
+- Deterministic success rate ≥ 40% on 50 eval episodes (relaxed from the original 50% — the harder dynamics + decoupling justify a softer gate)
+- FOV-loss rate < 20%
+- Trajectories show smooth approach and braking, no bang-bang yaw
+- Mean cumulative reward correlates positively with success (sanity check that the reward function is well-formed)
+
+### Stop conditions (when to revise weights, not just train longer)
+- Reward goes up but success rate doesn't → reward is still misaligned
+- FOV-loss > 30% sustained → `w_attitude` or `w_fov_loss` needs to be stronger, or `tau_velocity` is still too aggressive
+- Many small-distance FOV losses (<5m) → terminal approach is too hot; consider an extra "near-target" velocity penalty
+
+---
+
+## Stage 3a-noisy: Re-add 2b's Noise + Delay + DKF on top of 3a-v2
+
+### Goal
+Restore the sensor degradation that 3a-v1 silently dropped, on a working inertial policy. This is the actual `inertia + noisy obs` combined challenge the original plan intended.
+
+### What changes
+- Same env, dynamics, and reward as 3a-v2
+- Launch with `python train.py --stage stage3a_noisy --noise-delay --dkf` (uses [envs/wrappers/noise_delay_wrapper.py](envs/wrappers/noise_delay_wrapper.py) and [envs/wrappers/dkf_wrapper.py](envs/wrappers/dkf_wrapper.py))
+
+### Training strategy
+- **Warm-start from 3a-v2** (observation structure is preserved; DKF outputs replace obs[0:4] in place)
+- Fine-tune 2–5M timesteps
+- Three-way comparison: 3a-v2 (clean) vs noisy-without-DKF vs noisy-with-DKF — same comparison the plan called for under the original 2b but on the harder dynamics
 
 ### Success criterion
-- Success rate > 50% (expect major difficulty increase)
-- Trajectories show smooth, physically plausible curves
-- Agent learns to moderate acceleration near the target (to keep camera stable)
+- With DKF: deterministic success rate within 10% of 3a-v2 clean baseline
+- Without DKF: measurable degradation (confirms DKF carries its weight under inertial dynamics)
 
 ---
 
@@ -446,16 +515,18 @@ The DKF from Stage 2b must be upgraded to handle:
 
 ## Summary: Complete Roadmap
 
-| Stage | Challenge Introduced | Obs Dim | Action | Train From | Expected Success | Timesteps |
-|---|---|---|---|---|---|---|
-| **1a** ✅ | Pipeline validation | 18 | Velocity (4) | Fresh | 100% | 1M |
-| **1b** | Action smoothing, inertia-lite | 22 | Acceleration (4) | Fresh | >90% | 3-5M |
-| **2a** | Remove ground-truth obs | 13 | Acceleration (4) | Fresh | >70% | 5-10M |
-| **2b** | Noise + delay + DKF | 13 | Acceleration (4) | Warm (2a) | >60% | 2-3M |
-| **3a** | First-order dynamics, pitch coupling | 15 | Acceleration (4) | Fresh | >50% | 10-20M |
-| **3b** | Full 6-DOF + attitude controller | 15+ | Desired accel (4) | Warm (3a) | >40% | 20-50M |
-| **4a** | CBF-HardNet safety filter | 15+ | Safe accel (4) | Fine-tune (3b) | >35% | 5-10M |
-| **4b** | Noisy detection, wind | 15+ | Safe accel (4) | Warm (4a) | >30% | 10-20M |
+| Stage | Challenge Introduced | Obs Dim | Action | Train From | Expected Success | Timesteps | Status |
+|---|---|---|---|---|---|---|---|
+| **1a** | Pipeline validation | 18 | Velocity (4) | Fresh | 100% | 1M | ✅ |
+| **1b** | Action smoothing, inertia-lite | 22 | Acceleration (4) | Fresh | >90% | 3-5M | ✅ |
+| **2a** | Remove ground-truth obs | 16 | Acceleration (4) | Fresh | >70% | 5-10M | ✅ |
+| **2b** | Noise + delay + DKF | 16 | Acceleration (4) | Warm (2a) | >60% | 2-3M | ✅ |
+| **3a-v1** | First-order dynamics, pitch coupling (clean obs, wrong rewards) | 16 | Acceleration (4) | Fresh | >50% | 15M | ❌ 2% det. |
+| **3a-v2** | Inertia + reward fix + yaw lag (clean obs) | 16 | Acceleration (4) | Fresh | ≥40% | 10-20M | ⏳ next |
+| **3a-noisy** | Re-add 2b noise+delay+DKF | 16 | Acceleration (4) | Warm (3a-v2) | within 10% of 3a-v2 | 2-5M | ⏳ |
+| **3b** | Full 6-DOF + attitude controller | 15+ | Desired accel (4) | Warm (3a-noisy) | >40% | 20-50M | ⏳ |
+| **4a** | CBF-HardNet safety filter | 15+ | Safe accel (4) | Fine-tune (3b) | >35% | 5-10M | ⏳ |
+| **4b** | Noisy detection, wind | 15+ | Safe accel (4) | Warm (4a) | >30% | 10-20M | ⏳ |
 
 > [!IMPORTANT]
 > **Total estimated training budget: ~70-120M timesteps** across all stages. At the current speed (~6000 fps with 16 envs on CPU), 10M steps takes ~28 minutes. The full project would require approximately 5-6 hours of total training time.
@@ -481,10 +552,12 @@ The DKF from Stage 2b must be upgraded to handle:
 ## Open Questions
 
 > [!WARNING]
-> The following decisions need your input before we proceed:
+> Still open as of 2026-05-27:
 
-1. **Should we start with Stage 1b (action smoothing) or jump to Stage 2a (remove ground-truth)?** Stage 1b fixes the zigzag but is a smaller step. Stage 2a is harder but more impactful for the thesis.
+1. ~~Stage 1b vs Stage 2a starting point.~~ **Resolved** — both completed in sequence.
 
-2. **Policy architecture for Stage 2a onwards**: Should we switch from `MlpPolicy` to an **LSTM-based recurrent policy** (`RecurrentPPO` from SB3-contrib)? The agent will need memory to infer depth from temporal image changes.
+2. **Policy architecture for 3a-v2 and onward**: still using `MlpPolicy`. Should we switch to `RecurrentPPO` (SB3-contrib) before re-training? The Depth Estimator currently provides obs[5], so MLP may suffice — but if 3a-noisy reveals the agent can't infer depth from delayed/noisy obs[0:4] alone, recurrent will become necessary. **Tentative: stay MLP for 3a-v2; reassess after 3a-noisy results.**
 
-3. **Scope**: Are you targeting all stages for this project, or is there a deadline that limits how far we can go? This affects how much time we spend on each stage.
+3. ~~Periodic deterministic eval during training.~~ **Resolved** — `DeterministicEvalCallback` added to [train.py](train.py); runs `eval_n_episodes` deterministic rollouts every `eval_freq` training steps (defaults: 20 episodes / 1M steps), logs `eval/det_success_rate`, `eval/det_fov_loss_rate`, `eval/det_timeout_rate`, `eval/det_mean_distance`, `eval/det_mean_image_error` to TensorBoard. Watch `eval/det_success_rate` — not the stochastic `custom/success_rate` — as the ground-truth convergence signal.
+
+4. **Scope**: are you targeting all stages, or is 3b/4a/4b out of scope for this project's timeline?

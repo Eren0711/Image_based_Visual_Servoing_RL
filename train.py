@@ -33,6 +33,73 @@ from envs.interception_env import InterceptionEnv
 from experiment_paths import get_stage_paths, ensure_stage_dirs
 
 
+class DeterministicEvalCallback(BaseCallback):
+    """Run N deterministic eval episodes every M training steps.
+
+    Why this exists: `InterceptionMetricsCallback` logs outcomes from the
+    *stochastic* training rollouts, which over-report success because PPO's
+    action noise occasionally rescues a policy that can't actually solve the
+    task deterministically. Stage 3a-v1 showed a 15× gap (30% stochastic vs
+    2% deterministic) that went unnoticed for 15M steps. This callback runs
+    a real deterministic eval on a fresh env and logs `eval/det_*` so the
+    gap is visible in TensorBoard.
+    """
+
+    def __init__(self, eval_env_fn, eval_freq: int = 1_000_000,
+                 n_eval_episodes: int = 20, seed_base: int = 10_000,
+                 verbose: int = 0):
+        super().__init__(verbose)
+        self.eval_env_fn = eval_env_fn
+        self.eval_freq = eval_freq
+        self.n_eval_episodes = n_eval_episodes
+        self.seed_base = seed_base
+        self._last_eval_step = 0
+        self._eval_env = None
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_eval_step < self.eval_freq:
+            return True
+        self._last_eval_step = self.num_timesteps
+
+        if self._eval_env is None:
+            self._eval_env = self.eval_env_fn()
+
+        outcomes = []
+        distances = []
+        image_errors = []
+        for i in range(self.n_eval_episodes):
+            obs, info = self._eval_env.reset(seed=self.seed_base + i)
+            ep_img_err = []
+            done = False
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, _r, terminated, truncated, info = self._eval_env.step(action)
+                ep_img_err.append(info.get('image_error', 0.0))
+                done = terminated or truncated
+            outcomes.append(info.get('episode_outcome', 'unknown'))
+            distances.append(info.get('relative_distance', float('nan')))
+            image_errors.append(float(np.mean(ep_img_err)) if ep_img_err else 0.0)
+
+        n = len(outcomes)
+        n_success = sum(1 for o in outcomes if o == 'success')
+        n_fov = sum(1 for o in outcomes if o == 'fov_loss')
+        n_timeout = sum(1 for o in outcomes if o == 'timeout')
+
+        self.logger.record('eval/det_success_rate', n_success / n)
+        self.logger.record('eval/det_fov_loss_rate', n_fov / n)
+        self.logger.record('eval/det_timeout_rate', n_timeout / n)
+        self.logger.record('eval/det_mean_distance', float(np.mean(distances)))
+        self.logger.record('eval/det_mean_image_error', float(np.mean(image_errors)))
+
+        if self.verbose:
+            print(f"  [det-eval @ {self.num_timesteps:,} steps] "
+                  f"success={n_success}/{n} ({100*n_success/n:.0f}%)  "
+                  f"fov={n_fov}/{n}  timeout={n_timeout}/{n}  "
+                  f"mean_dist={np.mean(distances):.1f}m")
+
+        return True
+
+
 class InterceptionMetricsCallback(BaseCallback):
     """Custom callback to log episode-level metrics to TensorBoard.
 
@@ -271,7 +338,15 @@ def main():
         save_replay_buffer=False,
         save_vecnormalize=False,
     )
-    callback = CallbackList([metrics_callback, checkpoint_callback])
+    det_eval_callback = DeterministicEvalCallback(
+        eval_env_fn=make_env(
+            config, use_noise_delay=use_noise_delay, use_dkf=use_dkf,
+        ),
+        eval_freq=train_cfg.get('eval_freq', 1_000_000),
+        n_eval_episodes=train_cfg.get('eval_n_episodes', 20),
+        verbose=1,
+    )
+    callback = CallbackList([metrics_callback, checkpoint_callback, det_eval_callback])
 
     # --- Train ---
     print(f"\n{'='*60}")

@@ -1,19 +1,19 @@
 """
-IBVS Drone Interception Environment — Stage 2a
+IBVS Drone Interception Environment — Stage 3a
 ================================================
 Gymnasium environment for RL-based image-guided drone interception.
 
-Stage 1b → 2a changes:
-  - REMOVED from observation: ground-truth distance, LOS vector, relative velocity
-  - ADDED to observation: Jacobian-based depth estimate (ẑ_c)
-  - Observation: 22-dim → 16-dim
-  - Reward: rebalanced to prioritize visual tracking over blind pursuit
-  - Reward uses PRIVILEGED ground-truth distance (not in observation)
-  - Target maneuver modes configurable (default: constant_velocity + sinusoidal)
+Stage 2b → 3a changes:
+  - Drone dynamics: first-order velocity lag (τ=0.2s) replaces instant response
+  - Attitude coupling: pitch/roll derived from acceleration, tilts the camera
+  - Reward: added attitude stability penalty to discourage excessive pitch/roll
+  - Angular velocity for depth estimator: now uses actual pitch/roll rates
+  - Observation: pitch/roll normalized by max_pitch/max_roll (better resolution)
+  - Fresh training required (dynamics fundamentally changed)
 
-The agent must now solve the interception task primarily from image-plane
-information and its own ego-state. Depth is estimated via the IBVS
-interaction matrix (image Jacobian), not given as ground truth.
+The agent must now balance:
+  (a) Aggressive pursuit → large acceleration → large pitch → target drifts in FOV
+  (b) Gentle flight → small pitch → stable FOV → slow closure
 
 Coordinate convention: NED (z-down)
 
@@ -35,7 +35,7 @@ from observers.depth_estimator import DepthEstimator
 class InterceptionEnv(gym.Env):
     """Gymnasium environment for image-based visual servoing interception.
 
-    Stage 2a: Vision-only observation with Jacobian-based depth estimation.
+    Stage 3a: First-order inertia dynamics with attitude-camera coupling.
 
     Observation space (16-dim continuous):
         [0:2]   p̄_x, p̄_y          — normalized image-plane error
@@ -46,17 +46,17 @@ class InterceptionEnv(gym.Env):
         [9:12]  roll, pitch, yaw    — interceptor Euler angles (normalized)
         [12:16] prev_action         — previous action (4D)
 
-    Removed from Stage 1b:
-        - Ground-truth relative distance (was obs[5])
-        - LOS unit vector (was obs[12:15])
-        - Ground-truth relative velocity (was obs[15:18])
+    Stage 3a vs 2b:
+        - pitch and roll are now NON-ZERO (coupled to acceleration)
+        - obs[9:10] normalized by max_pitch/max_roll (better resolution)
+        - Camera tilts with the drone, changing where target appears in image
 
     Action space (4-dim continuous, [-1, 1]):
         [0:3]   a_cmd       — body-frame acceleration commands (scaled by a_max)
         [3]     yaw_rate    — yaw rate command (scaled by yaw_rate_max)
 
-    Reward: uses PRIVILEGED ground-truth distance for approach reward
-            (standard RL practice — reward is the teacher, obs is the input).
+    Reward: uses PRIVILEGED ground-truth distance for approach reward.
+            Attitude stability penalty added (Stage 3a).
 
     Episode termination:
         - Success: relative distance < d_success
@@ -127,15 +127,21 @@ class InterceptionEnv(gym.Env):
             self.target_modes = ['constant_velocity', 'sinusoidal']
 
         # --- Reward parameters ---
-        self.w_image = rwd_cfg['w_image']
+        self.w_image    = rwd_cfg['w_image']
         self.w_approach = rwd_cfg['w_approach']
         self.w_fov_loss = rwd_cfg['w_fov_loss']
         self.w_boundary = rwd_cfg['w_boundary']
-        self.w_effort = rwd_cfg['w_effort']
-        self.w_jerk = rwd_cfg.get('w_jerk', -0.1)
+        self.w_effort   = rwd_cfg['w_effort']
+        self.w_jerk     = rwd_cfg.get('w_jerk', -0.1)
+        self.w_attitude = rwd_cfg.get('w_attitude', -0.05)
+        self.w_dist_penalty = rwd_cfg.get('w_dist_penalty', 0.0)  # Stage 3a-v2
         self.w_intercept = rwd_cfg['w_intercept']
-        self.w_timeout = rwd_cfg['w_timeout']
-        self.k1_image = rwd_cfg['k1_image']
+        self.w_timeout  = rwd_cfg['w_timeout']
+        self.k1_image   = rwd_cfg['k1_image']
+
+        # Stage 3a: attitude normalization constants (for obs and reward)
+        self.max_pitch = self.interceptor.max_pitch  # rad
+        self.max_roll  = self.interceptor.max_roll   # rad
 
         # --- Spaces ---
         # Observation: 16-dimensional (Stage 2a: vision-only + depth estimate)
@@ -156,11 +162,10 @@ class InterceptionEnv(gym.Env):
         self._in_fov = True
         self._episode_outcome = 'running'
         self._prev_action = np.zeros(4)
-        self._current_depth_est = 20.0     # Current depth estimate from Jacobian
+        self._current_depth_est = 20.0     # Current depth estimate
         self._current_yaw_rate = 0.0       # Yaw rate applied this step
-
-        # Note: self.np_random is provided by gymnasium.Env and seeded
-        # via super().reset(seed=...). We use it for all randomization.
+        self._prev_pitch = 0.0             # Stage 3a: for angular rate estimation
+        self._prev_roll = 0.0
 
     @staticmethod
     def _load_default_config() -> dict:
@@ -204,6 +209,8 @@ class InterceptionEnv(gym.Env):
         self._episode_outcome = 'running'
         self._prev_action = np.zeros(4)
         self._current_yaw_rate = 0.0
+        self._prev_pitch = 0.0
+        self._prev_roll  = 0.0
 
         # --- Reset interceptor ---
         interceptor_pos = np.zeros(3)
@@ -345,8 +352,16 @@ class InterceptionEnv(gym.Env):
 
         current_distance = np.linalg.norm(p_r)
 
+        # --- Stage 3a: store previous attitude for rate estimation ---
+        prev_pitch = self.interceptor.pitch
+        prev_roll  = self.interceptor.roll
+
         # --- Depth estimation via Jacobian ---
         self._update_depth_estimate(cam_result, R_be)
+
+        # --- Update prev attitude after depth estimation ---
+        self._prev_pitch = prev_pitch
+        self._prev_roll  = prev_roll
 
         # --- FOV loss tracking ---
         if not self._in_fov:
@@ -390,30 +405,27 @@ class InterceptionEnv(gym.Env):
                                 R_be: np.ndarray) -> None:
         """Update the Jacobian-based depth estimate.
 
-        Uses the IBVS interaction matrix to estimate target depth from:
-          - Image feature velocity (finite differences)
-          - Camera ego-velocity (known from drone state)
-          - Camera angular velocity (known from yaw rate command)
-
-        The depth estimator runs a scalar Kalman filter on inverse depth
-        ρ = 1/z_c, producing a filtered estimate at each timestep.
+        Stage 3a change: angular velocity now includes pitch and roll rates
+        (not just yaw) because the drone actually tilts with acceleration.
+        This gives the depth estimator more accurate camera motion data.
 
         Args:
             cam_result: Camera projection results dict.
             R_be: Body-to-earth rotation matrix.
         """
         if not self._in_fov:
-            # Target not visible — can't update depth estimate.
-            # Estimator holds its previous value (prediction only).
             return
 
         # Image velocity via finite differences
-        p_bar = self._current_p_bar
+        p_bar     = self._current_p_bar
         p_bar_dot = (self._current_p_bar - self._prev_p_bar) / self.dt
 
-        # Camera velocity in camera frame
-        # Angular velocity: body frame [p, q, r] = [0, 0, yaw_rate] (Stage 1-2)
-        omega_body = np.array([0.0, 0.0, self._current_yaw_rate])
+        # Camera angular velocity in body frame
+        # Stage 3a: include pitch and roll rates (from attitude coupling)
+        pitch_rate = (self.interceptor.pitch - self._prev_pitch) / self.dt
+        roll_rate  = (self.interceptor.roll  - self._prev_roll)  / self.dt
+        # Body frame: [roll_rate, pitch_rate, yaw_rate] = [p, q, r]
+        omega_body = np.array([roll_rate, pitch_rate, self._current_yaw_rate])
 
         v_cam, omega_cam = InteractionMatrix.compute_camera_velocity(
             v_interceptor_efcs=self.interceptor.velocity,
@@ -422,15 +434,13 @@ class InterceptionEnv(gym.Env):
             R_c_b=self.camera.R_c_b,
         )
 
-        # Update the depth estimator
         est_result = self.depth_estimator.update(
             p_bar=p_bar,
             p_bar_dot=p_bar_dot,
             v_cam=v_cam,
             omega_cam=omega_cam,
-            v_target_cam=None,  # Assume static target (Stage 2a)
+            v_target_cam=None,
         )
-
         self._current_depth_est = est_result['z_hat']
 
     def _compute_reward(self, cam_result: dict, current_distance: float,
@@ -456,7 +466,7 @@ class InterceptionEnv(gym.Env):
         """
         reward = 0.0
 
-        # --- 1. Image centering reward (PRIMARY in Stage 2a) ---
+        # --- 1. Image centering reward (PRIMARY) ---
         p_bar = cam_result['p_bar']
         image_error_sq = p_bar[0] ** 2 + p_bar[1] ** 2
         if self._in_fov:
@@ -467,8 +477,14 @@ class InterceptionEnv(gym.Env):
 
         # --- 2. Approach reward (PRIVILEGED — uses ground-truth distance) ---
         delta_dist = current_distance - self._prev_distance
-        r_approach = -delta_dist
-        reward += self.w_approach * r_approach
+        reward += self.w_approach * (-delta_dist)
+
+        # --- 2b. Per-step distance penalty (Stage 3a-v2) ---
+        # Without this, the optimal policy under v1 weights was "fly past the
+        # target and orbit at constant distance" — image tracking paid forever
+        # while delta_dist averaged to zero. The penalty makes loitering at
+        # range strictly costly, so closure becomes mandatory for positive return.
+        reward += self.w_dist_penalty * (current_distance / self.norm_dist_max)
 
         # --- 3. FOV loss penalty ---
         if not self._in_fov:
@@ -477,19 +493,23 @@ class InterceptionEnv(gym.Env):
         # --- 4. FOV boundary penalty ---
         if self._in_fov:
             fov_margin = cam_result['fov_margin']
-            r_boundary = max(0.0, 1.0 - fov_margin) ** 2
-            reward += self.w_boundary * r_boundary
+            reward += self.w_boundary * max(0.0, 1.0 - fov_margin) ** 2
 
         # --- 5. Control effort penalty ---
-        r_effort = np.sum(action ** 2)
-        reward += self.w_effort * r_effort
+        reward += self.w_effort * float(np.sum(action ** 2))
 
         # --- 6. Jerk penalty ---
-        action_delta = action - self._prev_action
-        r_jerk = np.sum(action_delta ** 2)
-        reward += self.w_jerk * r_jerk
+        reward += self.w_jerk * float(np.sum((action - self._prev_action) ** 2))
 
-        # --- 7. Time penalty ---
+        # --- 7. Attitude stability penalty (Stage 3a) ---
+        # Penalize excessive pitch and roll — they degrade visual tracking
+        # Normalized by max allowed angle → penalty ∈ [0, 1] each
+        pitch_norm = abs(self.interceptor.pitch) / max(self.max_pitch, 1e-6)
+        roll_norm  = abs(self.interceptor.roll)  / max(self.max_roll,  1e-6)
+        r_attitude = pitch_norm ** 2 + roll_norm ** 2
+        reward += self.w_attitude * r_attitude
+
+        # --- 8. Time penalty ---
         reward += self.w_timeout
 
         return reward
@@ -547,11 +567,13 @@ class InterceptionEnv(gym.Env):
         body_vel = self.interceptor.get_body_velocity()
         obs[6:9] = np.clip(body_vel / self.v_max, -1.0, 1.0)
 
-        # [9:12] Interceptor Euler angles (normalized, ego-state from IMU)
+        # [9:12] Interceptor Euler angles — Stage 3a: normalize by max angle
+        # Using max_pitch/max_roll gives better resolution than dividing by π
+        # (pitch is typically <35°, so dividing by π wastes most of [-1,1])
         euler = self.interceptor.get_euler_angles()  # [roll, pitch, yaw]
-        obs[9] = np.clip(euler[0] / np.pi, -1.0, 1.0)
-        obs[10] = np.clip(euler[1] / np.pi, -1.0, 1.0)
-        obs[11] = np.clip(euler[2] / np.pi, -1.0, 1.0)
+        obs[9]  = np.clip(euler[0] / max(self.max_roll,  1e-6), -1.0, 1.0)   # roll
+        obs[10] = np.clip(euler[1] / max(self.max_pitch, 1e-6), -1.0, 1.0)   # pitch
+        obs[11] = np.clip(euler[2] / np.pi, -1.0, 1.0)                        # yaw
 
         # [12:16] Previous action (already in [-1, 1])
         obs[12:16] = self._prev_action.astype(np.float32)
@@ -571,19 +593,22 @@ class InterceptionEnv(gym.Env):
         """
         p_r = self.interceptor.position - self.target.position
         return {
-            'image_error': float(np.linalg.norm(cam_result['p_bar'])),
+            'image_error':       float(np.linalg.norm(cam_result['p_bar'])),
             'relative_distance': float(np.linalg.norm(p_r)),
-            'in_fov': bool(cam_result['in_fov']),
-            'fov_margin': float(cam_result['fov_margin']),
-            'episode_outcome': self._episode_outcome,
-            'step_count': self._step_count,
-            'interceptor_pos': self.interceptor.position.copy(),
-            'target_pos': self.target.position.copy(),
-            'p_bar': cam_result['p_bar'].copy(),
+            'in_fov':            bool(cam_result['in_fov']),
+            'fov_margin':        float(cam_result['fov_margin']),
+            'episode_outcome':   self._episode_outcome,
+            'step_count':        self._step_count,
+            'interceptor_pos':   self.interceptor.position.copy(),
+            'target_pos':        self.target.position.copy(),
+            'p_bar':             cam_result['p_bar'].copy(),
             # Depth estimation diagnostics
-            'depth_true': float(cam_result.get('depth', 0.0)),
-            'depth_est': float(self._current_depth_est),
-            'depth_error': float(abs(
+            'depth_true':        float(cam_result.get('depth', 0.0)),
+            'depth_est':         float(self._current_depth_est),
+            'depth_error':       float(abs(
                 self._current_depth_est - cam_result.get('depth', 0.0)
             )),
+            # Stage 3a: attitude diagnostics
+            'pitch_deg':         float(np.rad2deg(self.interceptor.pitch)),
+            'roll_deg':          float(np.rad2deg(self.interceptor.roll)),
         }
