@@ -11,9 +11,11 @@
 - [x] **Stage 2a** — Vision-only obs (ground-truth distance/LOS/relative-vel removed)
 - [x] **Stage 2b** — Noise + delay wrapper + DKF observer (wrappers wired in `train.py`)
 - [ ] **Stage 3a-v1** — ❌ Attempted (15M steps), failed: 2% deterministic success, 50% FOV loss, 48% timeout. Reward hacking + bang-bang yaw + infeasible braking. See "Lessons from Stage 3a v1" below.
-- [ ] **Stage 3a-v2** — Re-train with v1 fixes applied (clean obs, no sensor noise) — **NEXT**
-- [ ] **Stage 3a-noisy** — Re-introduce 2b's noise+delay+DKF on top of working 3a-v2
-- [ ] Stage 3b, 4a, 4b — future
+- [x] **Stage 3a-v2** — Clean obs, no sensor noise. 46% deterministic success (15M, kinematic).
+- [x] **Stage 3a-noisy** — 2b's noise+delay+DKF on top of 3a-v2. Mild noise (δ=1, σ=0.015): 66% with IMU DKF (kinematic). Full noise: 0% (DKF saturation, kinematic).
+- [x] **Stage 3b** — 6-DOF Newton-Euler dynamics + SO(3) PD attitude controller. Clean: 96% (7M ckpt). Noisy-mild + IMU DKF: 96.5% (4M ckpt, 200 ep seed=1000). Noisy-full: ~2% (perception ceiling, unchanged by dynamics upgrade).
+- [ ] **Stage 4a** — CBF-HardNet safety filter — **NEXT**
+- [ ] Stage 4b — future
 
 > **Decision (2026-05-27): Option B — decouple stages.** Stage 3a was originally specified as "inertia *on top of* 2b's noise/delay/DKF" but was implemented and trained on clean observations. Rather than re-add sensor noise concurrently with the 3a fixes (which violates the plan's "one change per stage" principle), we explicitly split 3a into a clean-obs sub-stage (`3a-v2`) and a noisy sub-stage (`3a-noisy`).
 

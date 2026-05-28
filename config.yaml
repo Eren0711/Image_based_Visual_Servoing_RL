@@ -108,16 +108,22 @@ depth_estimator:
   confidence_threshold: 0.01
 
 # --- Measurement noise and delay ---
-# Operating points tested (50-episode deterministic eval):
-#   delay=1, sigma=0.015 + CV DKF:         62%  (3a-noisy-mild, 7.0M ckpt)
-#   delay=1, sigma=0.015 + CV DKF + brake: 66%  (3a-noisy-mild-polished, 7.8M)
-#   delay=1, sigma=0.015 + IMU DKF:        66%  (3a-noisy-imu-dkf, 5.0M; no brake)
+# Operating points tested:
+#   --- Kinematic dynamics (Stage 3a) ---
+#   delay=1, sigma=0.015 + CV DKF:         62%  (3a-noisy-mild, 7.0M, 50 ep)
+#   delay=1, sigma=0.015 + CV DKF + brake: 66%  (3a-noisy-mild-polished, 7.8M, 50 ep)
+#   delay=1, sigma=0.015 + IMU DKF:        66%  (3a-noisy-imu-dkf, 5.0M, 50 ep)
 #   delay=3, sigma=0.03  + CV DKF:          0%  (3a-noisy-full; collapsed)
 #   delay=3, sigma=0.03  + IMU DKF:         0%  (3a-noisy-full-imu-dkf; collapsed)
-# Conclusion: the 4-dim image-plane DKF saturates between mild and full noise.
-# IMU feedforward eliminates the brake-penalty hack at mild noise but cannot
-# close the full-spec ceiling — that requires the paper's 18-dim EKF (quaternion
-# attitude + IMU bias states), which is out of scope for this project.
+#   --- 6-DOF dynamics (Stage 3b) ---
+#   clean (no wrapper):                    96.0% (3b-clean, 7M, 200 ep seed=1000)
+#   delay=1, sigma=0.015 + IMU DKF:        96.5% (3b-noisy-mild, 4M, 200 ep seed=1000)
+#   delay=3, sigma=0.03  + IMU DKF:         ~2% (3b-noisy-full; collapsed, stopped early)
+# Conclusion: the 4-dim image-plane DKF saturates between mild and full noise,
+# independent of the inner-loop dynamics (kinematic vs 6-DOF). IMU feedforward
+# eliminates the brake-penalty hack at mild noise but cannot close the full-spec
+# ceiling — that requires the paper's 18-dim EKF (quaternion attitude + IMU bias
+# states), which is out of scope for this project.
 # Mild noise kept as the canonical working spec for downstream stages.
 noise_delay:
   delay: 1
