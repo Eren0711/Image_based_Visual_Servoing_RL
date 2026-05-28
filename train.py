@@ -309,7 +309,10 @@ def main():
     # --- Create or load model ---
     if args.resume:
         print(f"Resuming training from: {args.resume}")
-        model = PPO.load(args.resume, env=vec_env)
+        # Override tensorboard_log explicitly — PPO.load restores the original
+        # path from the saved model, which sends fine-tune runs to the parent
+        # stage's TB folder. Without this, --stage on the CLI is ignored for TB.
+        model = PPO.load(args.resume, env=vec_env, tensorboard_log=log_dir)
     else:
         print("Creating new PPO model...")
         model = PPO(

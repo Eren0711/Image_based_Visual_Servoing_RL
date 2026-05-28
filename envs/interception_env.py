@@ -114,6 +114,7 @@ class InterceptionEnv(gym.Env):
         self.yaw_rate_max = int_cfg['yaw_rate_max']
         self.max_steps = env_cfg['max_steps']
         self.d_success = env_cfg['d_success']
+        self.d_image_cutoff = env_cfg.get('d_image_cutoff', 25.0)
         self.fov_loss_limit = env_cfg['fov_loss_limit']
         self.init_dist_range = env_cfg['init_distance_range']
         self.norm_dist_max = env_cfg['norm_distance_max']
@@ -135,6 +136,8 @@ class InterceptionEnv(gym.Env):
         self.w_jerk     = rwd_cfg.get('w_jerk', -0.1)
         self.w_attitude = rwd_cfg.get('w_attitude', -0.05)
         self.w_dist_penalty = rwd_cfg.get('w_dist_penalty', 0.0)  # Stage 3a-v2
+        self.w_near_brake = rwd_cfg.get('w_near_brake', 0.0)      # Stage 3a-noisy polish
+        self.d_brake = rwd_cfg.get('d_brake', 5.0)
         self.w_intercept = rwd_cfg['w_intercept']
         self.w_timeout  = rwd_cfg['w_timeout']
         self.k1_image   = rwd_cfg['k1_image']
@@ -466,11 +469,23 @@ class InterceptionEnv(gym.Env):
         """
         reward = 0.0
 
-        # --- 1. Image centering reward (PRIMARY) ---
+        # --- 1. Image centering reward (distance-gated) ---
+        # The raw form exp(-k * ||p̄||^2) pays the same at any distance as long
+        # as the target is centered. That made loiter-at-distance the optimal
+        # strategy under noisy perception (breakeven analysis: agent would need
+        # 66% commit success to prefer closure over loitering at 35m).
+        # The distance gate makes image reward decay linearly to zero at
+        # d_image_cutoff, so the agent can only harvest image reward by getting
+        # close. Tracking is still incentivized during legitimate approach
+        # (factor > 0 for d < d_image_cutoff) but not while loitering at range.
         p_bar = cam_result['p_bar']
         image_error_sq = p_bar[0] ** 2 + p_bar[1] ** 2
         if self._in_fov:
-            r_image = np.exp(-self.k1_image * image_error_sq)
+            raw_image = np.exp(-self.k1_image * image_error_sq)
+            distance_factor = max(
+                0.0, 1.0 - current_distance / self.d_image_cutoff
+            )
+            r_image = raw_image * distance_factor
         else:
             r_image = 0.0
         reward += self.w_image * r_image
@@ -485,6 +500,20 @@ class InterceptionEnv(gym.Env):
         # while delta_dist averaged to zero. The penalty makes loitering at
         # range strictly costly, so closure becomes mandatory for positive return.
         reward += self.w_dist_penalty * (current_distance / self.norm_dist_max)
+
+        # --- 2c. Near-target braking penalty (Stage 3a-noisy polish) ---
+        # 79% of FOV-loss failures occurred at d=2.5-5m, where the agent over-
+        # committed terminally — high closure velocity caused aggressive pitch,
+        # which slipped the target out of frame at the moment of interception.
+        # This term pays nothing outside d_brake but progressively penalizes
+        # body speed as the agent enters the terminal zone, encouraging it to
+        # bleed velocity before the final approach.
+        if current_distance < self.d_brake:
+            proximity_speed = float(
+                np.linalg.norm(self.interceptor.get_body_velocity())
+            )
+            proximity_factor = (self.d_brake - current_distance) / self.d_brake
+            reward += self.w_near_brake * proximity_speed * proximity_factor
 
         # --- 3. FOV loss penalty ---
         if not self._in_fov:

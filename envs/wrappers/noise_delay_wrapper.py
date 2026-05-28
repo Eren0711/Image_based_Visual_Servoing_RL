@@ -53,9 +53,13 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
         self.delay = delay
         self.sigma_noise = sigma_noise
 
-        # Buffer for delayed image observations: stores (p_bar_normalized)
-        # Each entry is [obs[0], obs[1]] (the normalized image position)
-        self._p_bar_buffer = deque(maxlen=delay + 1)
+        # Buffer for delayed image observations: stores (p_bar_normalized, in_fov)
+        # The in_fov flag is delayed alongside p_bar so the DKF update gate and
+        # the agent's visibility signal stay temporally consistent with the
+        # measurement they describe (without this, obs[4] reflects the CURRENT
+        # in_fov while obs[0:2] is from D steps ago — the DKF would then update
+        # with stale measurements or skip valid ones near FOV transitions).
+        self._buffer = deque(maxlen=delay + 1)
 
         # Previous delayed+noisy p_bar for velocity recomputation
         self._prev_noisy_p_bar = np.zeros(2)
@@ -70,10 +74,11 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
         obs, info = self.env.reset(**kwargs)
 
         # Clear buffer and fill with initial observation
-        self._p_bar_buffer.clear()
+        self._buffer.clear()
         initial_p_bar = obs[0:2].copy()
+        initial_in_fov = float(obs[4])
         for _ in range(self.delay + 1):
-            self._p_bar_buffer.append(initial_p_bar.copy())
+            self._buffer.append((initial_p_bar.copy(), initial_in_fov))
 
         self._prev_noisy_p_bar = initial_p_bar.copy()
 
@@ -100,13 +105,14 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
         """
         obs = obs.copy()
 
-        # --- Store current clean image position ---
+        # --- Store current clean image position + in_fov flag ---
         current_p_bar = obs[0:2].copy()
-        self._p_bar_buffer.append(current_p_bar)
+        current_in_fov = float(obs[4])
+        self._buffer.append((current_p_bar, current_in_fov))
 
-        # --- Retrieve delayed image position ---
-        # The oldest entry in the buffer is from D steps ago
-        delayed_p_bar = self._p_bar_buffer[0].copy()
+        # --- Retrieve delayed image position + in_fov from D steps ago ---
+        delayed_p_bar, delayed_in_fov = self._buffer[0]
+        delayed_p_bar = delayed_p_bar.copy()
 
         # --- Add Gaussian noise ---
         noise = self._noise_rng.normal(0.0, self.sigma_noise, size=2)
@@ -115,8 +121,9 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
         # Clip to valid range
         noisy_delayed_p_bar = np.clip(noisy_delayed_p_bar, -1.0, 1.0)
 
-        # --- Update observation ---
+        # --- Update observation: image pos AND in_fov flag are delayed together ---
         obs[0:2] = noisy_delayed_p_bar
+        obs[4] = np.float32(delayed_in_fov)
 
         # --- Recompute image velocity from noisy/delayed data ---
         dt = self.env.dt

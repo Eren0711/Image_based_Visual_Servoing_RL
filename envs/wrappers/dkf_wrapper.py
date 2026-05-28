@@ -50,20 +50,36 @@ class DKFWrapper(gym.ObservationWrapper):
         self.delay = delay
         self.dt = dt
 
-        self.dkf = DisturbanceKalmanFilter(
-            dt=dt,
-            delay=delay,
-            sigma_pos_process=sigma_pos_process,
-            sigma_vel_process=sigma_vel_process,
-            sigma_measurement=sigma_measurement,
-        )
-
-        # Cache FOV params at construction time (env.unwrapped is always the base env)
+        # Cache FOV params before instantiating the DKF (needed for unit scaling)
         unwrapped = env.unwrapped
         if hasattr(unwrapped, 'camera'):
             self._fov_params = unwrapped.camera.get_fov_params()
         else:
             self._fov_params = None
+
+        # --- Unit conversion on sigma_measurement ---
+        # NoiseDelayWrapper adds noise in FOV-normalized [-1, 1] coords, but the
+        # DKF operates internally on raw p_bar = (x_c/z_c, y_c/z_c). The two are
+        # related by p_bar = obs_normalized * tan(half_fov). Without this
+        # conversion the DKF over-estimates measurement variance by ~2×, which
+        # makes the Kalman gain too small and lags the target estimate.
+        # Use geometric mean of tan_half_hfov and tan_half_vfov for the scalar R.
+        if self._fov_params is not None:
+            tan_h = self._fov_params['tan_half_hfov']
+            tan_v = self._fov_params['tan_half_vfov']
+            self._meas_scale = float(np.sqrt(tan_h * tan_v))
+            sigma_meas_raw = sigma_measurement * self._meas_scale
+        else:
+            self._meas_scale = 1.0
+            sigma_meas_raw = sigma_measurement
+
+        self.dkf = DisturbanceKalmanFilter(
+            dt=dt,
+            delay=delay,
+            sigma_pos_process=sigma_pos_process,
+            sigma_vel_process=sigma_vel_process,
+            sigma_measurement=sigma_meas_raw,
+        )
 
     def reset(self, **kwargs):
         """Reset the wrapper, DKF, and underlying environment."""

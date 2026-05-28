@@ -53,7 +53,20 @@ env:
                                    # 2.25 m braking distance at v_max=15, τ=0.15.
                                    # 2.0 m miss distance is realistic for ~30cm
                                    # drone-on-drone visual interception.
-  fov_loss_limit: 10
+  d_image_cutoff: 25.0             # Distance beyond which image-centering reward
+                                   # is zero. Closes the loiter-at-distance local
+                                   # optimum: without this gate, the agent could
+                                   # harvest +0.4/step image reward at 35m while
+                                   # avoiding FOV-loss risk, dominating commits.
+                                   # With cutoff=25: image reward decays linearly
+                                   # to 0 at 25m, full value at the target. Loiter
+                                   # at >=25m now pays zero image reward, only
+                                   # closure earns positive returns.
+  fov_loss_limit: 15                # 10 (clean v2) → 15 for noisy stages.
+                                   # The -5/-20 experiment showed reward tuning doesn't
+                                   # rescue noise-induced FOV losses; this modest bump
+                                   # gives the DKF time to re-acquire after a brief
+                                   # slip without making episodes drag on indefinitely.
   init_distance_range: [10.0, 30.0]
   norm_distance_max: 50.0
   norm_velocity_max: 15.0
@@ -68,10 +81,20 @@ depth_estimator:
   rho_max: 2.0
   confidence_threshold: 0.01
 
-# --- Measurement noise and delay (Stage 2b, carried forward) ---
+# --- Measurement noise and delay ---
+# Operating points tested:
+#   delay=1, sigma=0.015  → 62% deterministic success (3a-noisy-mild, 7M ckpt)
+#   delay=3, sigma=0.03   → 0%  deterministic success (3a-noisy-full, collapsed)
+# The transition is the perception ceiling for our simplified DKF (4-dim,
+# constant-velocity image-plane model). At delay=3+ the constant-velocity
+# assumption breaks down during aggressive pitch maneuvers — the filter cannot
+# predict where the target will appear in the image after the body rotates.
+# Closing this gap requires IMU-aware prediction (the paper's 18-dim EKF that
+# integrates body angular velocity through the interaction matrix). Left as
+# future work. Default kept at mild noise as the verified working spec.
 noise_delay:
-  delay: 3
-  sigma_noise: 0.03
+  delay: 1
+  sigma_noise: 0.015
 
 # --- DKF parameters ---
 dkf:
@@ -94,12 +117,40 @@ dkf:
 reward:
   w_image:        0.4
   w_approach:     2.0
-  w_dist_penalty: -0.02        # NEW: per-step penalty ∝ current distance
-                               # Computed against current_distance / norm_distance_max,
-                               # so at 30m: -0.012/step; at d_success: ≈0.
-                               # Closes the reward-hacking loophole where
-                               # holding station with target in frame paid forever.
-  w_fov_loss: -20.0
+  w_dist_penalty: -0.15        # 0.02 → 0.15 after stage3a_noisy_mild showed the
+                               # loiter local optimum: agent backed off to 40m+
+                               # to harvest +0.24/step image reward against only
+                               # -0.016/step distance penalty (net +0.17/step).
+                               # At -0.15: 40m gives -0.12/step, which outweighs
+                               # image reward and forces closure. At d_success
+                               # (2m): -0.006/step, negligible — doesn't punish
+                               # near-target hovering during terminal approach.
+  w_near_brake:   -0.05        # Near-target braking penalty. 79% of FOV losses
+                               # in noisy-mild ended at d=2.5-5m — agent over-
+                               # commits terminally and pitches too hard right
+                               # at the success threshold. Penalty form:
+                               #   w * |v_body| * max(0, (d_brake - d)/d_brake)
+                               # Zero outside d_brake. Inside, scales with both
+                               # speed and proximity. At d=2m, v=5m/s: -0.15/step;
+                               # at d=4m, v=10m/s: -0.10/step. Doesn't affect
+                               # cruise (d>d_brake) and doesn't punish slow
+                               # near-target hovering.
+  d_brake:         5.0         # Distance threshold (m) below which the near-
+                               # target brake penalty activates.
+  w_fov_loss: -3.0                  # -20 (v2 clean) → -3 (3a-noisy).
+                                   # Previously -5 didn't help because loiter was
+                                   # the optimal strategy regardless of FOV penalty
+                                   # magnitude. With image reward now gated by
+                                   # distance (d_image_cutoff), loiter pays -107
+                                   # per episode and the only positive-reward
+                                   # strategy is commit. The breakeven success
+                                   # rate for "commit beats loiter" is ~33%; at
+                                   # -20 per FOV step (×15 steps = -300 per failed
+                                   # commit) the agent can't get there through
+                                   # exploration because failed attempts cost too
+                                   # much. At -3, failed commits cost only -17,
+                                   # so the gradient supports learning from
+                                   # repeated unsuccessful attempts.
   w_boundary: -0.5
   w_effort:   -0.05
   w_jerk:     -0.05
