@@ -193,7 +193,8 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False):
+def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
+             use_imu_dkf: bool = True):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
@@ -228,6 +229,7 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False)
                 sigma_pos_process=dkf_cfg.get('sigma_pos_process', 0.01),
                 sigma_vel_process=dkf_cfg.get('sigma_vel_process', 0.5),
                 sigma_measurement=dkf_cfg.get('sigma_measurement', 0.03),
+                use_imu=use_imu_dkf,
             )
 
         return env
@@ -267,6 +269,13 @@ def main():
         '--dkf', action='store_true', default=False,
         help='Enable DKF wrapper on top of noise/delay (Stage 2b)'
     )
+    parser.add_argument(
+        '--no-imu-dkf', action='store_true', default=False,
+        help='Disable IMU-aware DKF prediction (B-minimal upgrade). '
+             'Use this for ablation: --dkf alone uses the constant-velocity '
+             'DKF; --dkf --no-imu-dkf forces the legacy behavior; '
+             '--dkf with IMU prediction is the default new behavior.'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -286,6 +295,7 @@ def main():
     # --- Create vectorized environment ---
     use_noise_delay = args.noise_delay
     use_dkf = args.dkf
+    use_imu_dkf = not args.no_imu_dkf  # default ON, --no-imu-dkf disables
 
     if use_dkf and not use_noise_delay:
         print("  Note: --dkf implies --noise-delay. Enabling both.")
@@ -296,13 +306,15 @@ def main():
         nd_cfg = config.get('noise_delay', {})
         wrapper_str += f"  + NoiseDelay (D={nd_cfg.get('delay', 3)}, σ={nd_cfg.get('sigma_noise', 0.03)})\n"
     if use_dkf:
-        wrapper_str += '  + DKF\n'
+        imu_tag = ' (IMU-aware)' if use_imu_dkf else ' (constant-velocity)'
+        wrapper_str += f'  + DKF{imu_tag}\n'
 
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
         print(f"  Wrappers:\n{wrapper_str}")
     vec_env = make_vec_env(
-        make_env(config, use_noise_delay=use_noise_delay, use_dkf=use_dkf),
+        make_env(config, use_noise_delay=use_noise_delay, use_dkf=use_dkf,
+                 use_imu_dkf=use_imu_dkf),
         n_envs=n_envs,
     )
 
@@ -344,6 +356,7 @@ def main():
     det_eval_callback = DeterministicEvalCallback(
         eval_env_fn=make_env(
             config, use_noise_delay=use_noise_delay, use_dkf=use_dkf,
+            use_imu_dkf=use_imu_dkf,
         ),
         eval_freq=train_cfg.get('eval_freq', 1_000_000),
         n_eval_episodes=train_cfg.get('eval_n_episodes', 20),

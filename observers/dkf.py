@@ -133,6 +133,11 @@ class DisturbanceKalmanFilter:
         # --- Diagnostics ---
         self._step_count = 0
 
+        # --- IMU-aware prediction state (B-minimal upgrade) ---
+        # Stores the previous step's camera-induced image velocity so we can
+        # propagate only its change in the prediction step. Zero on init.
+        self._prev_pbar_dot_cam = np.zeros(2)
+
     def reset(self, p_bar_init: np.ndarray = None) -> None:
         """Reset the filter to initial conditions.
 
@@ -152,22 +157,58 @@ class DisturbanceKalmanFilter:
         self._state_buffer.clear()
         self._cov_buffer.clear()
         self._step_count = 0
+        self._prev_pbar_dot_cam = np.zeros(2)
 
         # Fill buffer with initial state
         for _ in range(self.delay + 1):
             self._state_buffer.append(self.x_hat.copy())
             self._cov_buffer.append(self.P.copy())
 
-    def predict(self) -> np.ndarray:
+    def predict(self, pbar_dot_cam: np.ndarray = None) -> np.ndarray:
         """Perform the prediction step: propagate state forward by one dt.
 
-        x_{k|k-1} = F · x_{k-1|k-1}
-        P_{k|k-1} = F · P_{k-1|k-1} · Fᵀ + Q
+        Standard (constant-velocity) form:
+            x_{k|k-1} = F · x_{k-1|k-1}
+            P_{k|k-1} = F · P_{k-1|k-1} · Fᵀ + Q
+
+        IMU-aware form (B-minimal — Stage 3a-noisy DKF upgrade):
+        When `pbar_dot_cam` is provided, it represents the predicted image-plane
+        velocity induced by camera ego-motion (computed from the interaction
+        matrix and current body velocity/angular rates). The constant-velocity
+        assumption is then applied to the TARGET'S contribution — the residual
+        after subtracting the camera contribution — rather than to the total
+        image velocity. This is much more physically realistic: target motion
+        changes slowly, but camera-induced image motion changes abruptly when
+        the drone pitches/rolls during aggressive maneuvers. Without this, the
+        filter mispredicts during fast attitude changes and the agent loses
+        the target (the failure mode at delay=3, sigma=0.03).
+
+        Update equations under IMU-aware prediction:
+            Δ_cam = pbar_dot_cam_k - pbar_dot_cam_{k-1}
+            ṗ̄_k|k-1 = ṗ̄_{k-1|k-1} + Δ_cam      # carry forward delta from IMU
+            p̄_k|k-1 = p̄_{k-1|k-1} + dt · ṗ̄_{k-1|k-1} + 0.5·dt·Δ_cam
+
+        Args:
+            pbar_dot_cam: np.ndarray (2,) — predicted camera-motion contribution
+                to image-plane velocity at the current step, computed externally
+                via L_s · [v_cam, ω_cam]. If None, fall back to pure CV prediction.
 
         Returns:
             np.ndarray (4,): Predicted state [p̄_x, p̄_y, dp̄_x/dt, dp̄_y/dt].
         """
+        # Standard CV propagation
         self.x_hat = self.F @ self.x_hat
+
+        # IMU-aware feedforward: carry forward the change in camera contribution
+        if pbar_dot_cam is not None:
+            pbar_dot_cam = np.asarray(pbar_dot_cam, dtype=np.float64)
+            delta_cam = pbar_dot_cam - self._prev_pbar_dot_cam
+            # Velocity state: add delta from camera (target's contribution stays constant)
+            self.x_hat[2:] += delta_cam
+            # Position state: mid-point correction from the velocity change
+            self.x_hat[:2] += 0.5 * self.dt * delta_cam
+            self._prev_pbar_dot_cam = pbar_dot_cam.copy()
+
         self.P = self.F @ self.P @ self.F.T + self.Q
 
         # Clamp covariance to prevent overflow
@@ -263,7 +304,8 @@ class DisturbanceKalmanFilter:
 
         return self.x_hat.copy()
 
-    def step(self, z: np.ndarray = None) -> dict:
+    def step(self, z: np.ndarray = None,
+             pbar_dot_cam: np.ndarray = None) -> dict:
         """Perform one full DKF step: predict + update (if measurement available).
 
         This is the main method to call at each timestep.
@@ -271,6 +313,8 @@ class DisturbanceKalmanFilter:
         Args:
             z: Noisy, delayed measurement [p̄_x, p̄_y]. Shape (2,).
                If None, only prediction is performed (no measurement).
+            pbar_dot_cam: Optional (2,) — predicted camera-motion image velocity
+               for IMU-aware prediction (see `predict` docstring).
 
         Returns:
             dict with:
@@ -280,7 +324,7 @@ class DisturbanceKalmanFilter:
                 'P_diag' : np.ndarray (4,) — diagonal of covariance
         """
         # Prediction
-        self.predict()
+        self.predict(pbar_dot_cam=pbar_dot_cam)
 
         # Update (if measurement available)
         if z is not None:
