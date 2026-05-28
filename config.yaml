@@ -21,19 +21,45 @@ camera:
 
 # --- Interceptor drone ---
 interceptor:
+  # Model selector: 'kinematic_3a' or 'multicopter_6dof'
+  #   kinematic_3a    — first-order velocity lag + pitch=arctan(a/g) coupling
+  #                      (Stage 3a model, default for backward compat)
+  #   multicopter_6dof — full Newton-Euler dynamics with SO(3) PD attitude
+  #                      controller, quaternion attitude, motor & rate-loop lag
+  #                      (Stage 3b "lite" — no drag, no rotor mixing)
+  model: 'multicopter_6dof'
+
+  # Shared parameters (used by both models)
   v_max: 15.0
   a_max: 10.0
   yaw_rate_max: 0.7854             # ~π/4
   dt: 0.02                         # 50 Hz
-  # Stage 3a: inertia parameters
-  tau_velocity: 0.15               # First-order velocity time constant (s)
-                                   # τ=0.15s → braking distance from v_max ≈ 2.25 m
-                                   # Must satisfy v_max * τ < d_success for closure
-  tau_yaw_rate: 0.10               # First-order lag on yaw rate command (s)
-                                   # Prevents the bang-bang yaw oscillation seen
-                                   # in the v1 Stage 3a policy.
-  max_pitch_deg: 35.0              # Maximum pitch angle (deg), physically realistic
-  max_roll_deg:  35.0              # Maximum roll angle (deg)
+  max_pitch_deg: 35.0
+  max_roll_deg:  35.0
+
+  # Stage 3a kinematic-model parameters (ignored when model='multicopter_6dof')
+  tau_velocity: 0.15
+  tau_yaw_rate: 0.10
+
+  # Stage 3b 6-DOF-model parameters (ignored when model='kinematic_3a')
+  dynamics_6dof:
+    mass: 1.0                      # kg — typical small quad
+    J_xx: 0.01                     # kg·m² body-x inertia
+    J_yy: 0.01                     # kg·m² body-y inertia
+    J_zz: 0.02                     # kg·m² body-z inertia (slightly higher,
+                                   # asymmetric yaw inertia typical for quads)
+    tau_motor: 0.05                # motor thrust response time constant (s)
+                                   # 0.05s ≈ typical BLDC + ESC bandwidth
+    tau_rate:  0.05                # rate-loop tracking time constant (s)
+                                   # Captures inner-loop attitude bandwidth
+                                   # (200 Hz in paper Eq. 28 → ~5ms; we use
+                                   # 50ms because the env steps at 50 Hz and
+                                   # finer would require sub-stepping)
+    thrust_to_weight: 3.0          # max thrust / weight (matches paper)
+    omega_max: 4.0                 # body angular velocity saturation (rad/s)
+                                   # ~230°/s, typical for aggressive flight
+    k_attitude: 6.0                # SO(3) PD gain on attitude error
+                                   # Higher = stiffer R_d tracking
 
 # --- Target drone ---
 target:

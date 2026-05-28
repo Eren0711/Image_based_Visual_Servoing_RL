@@ -26,6 +26,7 @@ import gymnasium as gym
 from gymnasium import spaces
 
 from models.drone_dynamics import InterceptorDrone
+from models.multicopter_6dof import Multicopter6DOFLite
 from models.target_model import TargetDrone
 from models.camera_model import PinholeCamera
 from observers.interaction_matrix import InteractionMatrix
@@ -91,7 +92,17 @@ class InterceptionEnv(gym.Env):
         tgt_cfg_full = {**tgt_cfg, 'dt': int_cfg['dt']}
 
         # --- Create sub-models ---
-        self.interceptor = InterceptorDrone(int_cfg)
+        # Stage 3a kinematic vs Stage 3b 6-DOF, selected via config
+        model_name = int_cfg.get('model', 'kinematic_3a')
+        if model_name == 'multicopter_6dof':
+            self.interceptor = Multicopter6DOFLite(int_cfg)
+        elif model_name == 'kinematic_3a':
+            self.interceptor = InterceptorDrone(int_cfg)
+        else:
+            raise ValueError(
+                f"Unknown interceptor model '{model_name}'. "
+                f"Must be 'kinematic_3a' or 'multicopter_6dof'."
+            )
         self.target = TargetDrone(tgt_cfg_full)
         self.camera = PinholeCamera(cam_cfg)
 
