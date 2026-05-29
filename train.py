@@ -194,7 +194,9 @@ def load_config(config_path: str) -> dict:
 
 
 def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
-             use_imu_dkf: bool = True):
+             use_imu_dkf: bool = True, use_cbf: bool = False,
+             cbf_alpha_fov: float = 0.999, cbf_alpha_att: float = 0.7,
+             cbf_horizon_fov: int = 1, cbf_horizon_att: int = 8):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
@@ -230,6 +232,17 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
                 sigma_vel_process=dkf_cfg.get('sigma_vel_process', 0.5),
                 sigma_measurement=dkf_cfg.get('sigma_measurement', 0.03),
                 use_imu=use_imu_dkf,
+            )
+
+        if use_cbf:
+            from envs.wrappers.cbf_wrapper import CBFWrapper
+            env = CBFWrapper(
+                env,
+                alpha_fov=cbf_alpha_fov,
+                alpha_attitude=cbf_alpha_att,
+                horizon_fov=cbf_horizon_fov,
+                horizon_attitude=cbf_horizon_att,
+                in_fov_only=True,
             )
 
         return env
@@ -276,6 +289,30 @@ def main():
              'DKF; --dkf --no-imu-dkf forces the legacy behavior; '
              '--dkf with IMU prediction is the default new behavior.'
     )
+    parser.add_argument(
+        '--cbf', action='store_true', default=False,
+        help='Enable CBF safety filter in training loop (Stage 4a Phase 2)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-fov', type=float, default=0.999,
+        help='CBF FOV margin (closer to 1 = more permissive)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-att', type=float, default=0.7,
+        help='CBF attitude margin'
+    )
+    parser.add_argument(
+        '--cbf-horizon-fov', type=int, default=1,
+        help='Prediction horizon (steps) for FOV constraint'
+    )
+    parser.add_argument(
+        '--cbf-horizon-att', type=int, default=8,
+        help='Prediction horizon (steps) for attitude constraint'
+    )
+    parser.add_argument(
+        '--lr-decay', action='store_true', default=False,
+        help='Linear LR decay from initial value to 0 over training'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -301,6 +338,8 @@ def main():
         print("  Note: --dkf implies --noise-delay. Enabling both.")
         use_noise_delay = True
 
+    use_cbf = args.cbf
+
     wrapper_str = ''
     if use_noise_delay:
         nd_cfg = config.get('noise_delay', {})
@@ -308,15 +347,44 @@ def main():
     if use_dkf:
         imu_tag = ' (IMU-aware)' if use_imu_dkf else ' (constant-velocity)'
         wrapper_str += f'  + DKF{imu_tag}\n'
+    if use_cbf:
+        wrapper_str += (f'  + CBF (alpha_fov={args.cbf_alpha_fov} '
+                        f'alpha_att={args.cbf_alpha_att} '
+                        f'h_fov={args.cbf_horizon_fov} '
+                        f'h_att={args.cbf_horizon_att})\n')
 
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
         print(f"  Wrappers:\n{wrapper_str}")
+    env_kwargs = dict(
+        use_noise_delay=use_noise_delay, use_dkf=use_dkf,
+        use_imu_dkf=use_imu_dkf, use_cbf=use_cbf,
+        cbf_alpha_fov=args.cbf_alpha_fov,
+        cbf_alpha_att=args.cbf_alpha_att,
+        cbf_horizon_fov=args.cbf_horizon_fov,
+        cbf_horizon_att=args.cbf_horizon_att,
+    )
     vec_env = make_vec_env(
-        make_env(config, use_noise_delay=use_noise_delay, use_dkf=use_dkf,
-                 use_imu_dkf=use_imu_dkf),
+        make_env(config, **env_kwargs),
         n_envs=n_envs,
     )
+
+    # --- Learning rate (constant or linear-decay schedule) ---
+    base_lr = float(train_cfg['learning_rate'])
+    if args.lr_decay:
+        # SB3 calls the schedule with `progress_remaining` in [1.0 → 0.0].
+        # Linear: lr(t) = base_lr * progress_remaining. Final lr = 0.
+        # Addresses the persistent overtraining pattern seen across stages
+        # (every fine-tune's peak ckpt is well before the final ckpt). With
+        # decay, the late-training updates are smaller and the final ckpt
+        # should match (or come close to) the peak.
+        def lr_schedule(progress_remaining: float) -> float:
+            return base_lr * float(progress_remaining)
+        learning_rate = lr_schedule
+        lr_desc = f'{base_lr} → 0 (linear decay)'
+    else:
+        learning_rate = base_lr
+        lr_desc = f'{base_lr} (constant)'
 
     # --- Create or load model ---
     if args.resume:
@@ -325,12 +393,18 @@ def main():
         # path from the saved model, which sends fine-tune runs to the parent
         # stage's TB folder. Without this, --stage on the CLI is ignored for TB.
         model = PPO.load(args.resume, env=vec_env, tensorboard_log=log_dir)
+        # Also override learning rate if --lr-decay is set (otherwise the
+        # restored model keeps its original constant LR).
+        if args.lr_decay:
+            model.learning_rate = learning_rate
+            model._setup_lr_schedule()
+            print(f"  Resumed model LR overridden to: {lr_desc}")
     else:
         print("Creating new PPO model...")
         model = PPO(
             policy=train_cfg['policy'],
             env=vec_env,
-            learning_rate=train_cfg['learning_rate'],
+            learning_rate=learning_rate,
             n_steps=train_cfg['n_steps'],
             batch_size=train_cfg['batch_size'],
             n_epochs=train_cfg['n_epochs'],
@@ -354,10 +428,7 @@ def main():
         save_vecnormalize=False,
     )
     det_eval_callback = DeterministicEvalCallback(
-        eval_env_fn=make_env(
-            config, use_noise_delay=use_noise_delay, use_dkf=use_dkf,
-            use_imu_dkf=use_imu_dkf,
-        ),
+        eval_env_fn=make_env(config, **env_kwargs),
         eval_freq=train_cfg.get('eval_freq', 1_000_000),
         n_eval_episodes=train_cfg.get('eval_n_episodes', 20),
         verbose=1,
@@ -372,7 +443,7 @@ def main():
     print(f"  Stage           : {paths['stage']}")
     print(f"  Parallel envs   : {n_envs}")
     print(f"  Policy           : {train_cfg['policy']}")
-    print(f"  Learning rate    : {train_cfg['learning_rate']}")
+    print(f"  Learning rate    : {lr_desc}")
     print(f"  Batch size       : {train_cfg['batch_size']}")
     print(f"  Log directory    : {log_dir}")
     print(f"  Save directory   : {save_dir}")

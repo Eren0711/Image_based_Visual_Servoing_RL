@@ -14,7 +14,10 @@
 - [x] **Stage 3a-v2** — Clean obs, no sensor noise. 46% deterministic success (15M, kinematic).
 - [x] **Stage 3a-noisy** — 2b's noise+delay+DKF on top of 3a-v2. Mild noise (δ=1, σ=0.015): 66% with IMU DKF (kinematic). Full noise: 0% (DKF saturation, kinematic).
 - [x] **Stage 3b** — 6-DOF Newton-Euler dynamics + SO(3) PD attitude controller. Clean: 96% (7M ckpt). Noisy-mild + IMU DKF: 96.5% (4M ckpt, 200 ep seed=1000). Noisy-full: ~2% (perception ceiling, unchanged by dynamics upgrade).
-- [ ] **Stage 4a** — CBF-HardNet safety filter — **NEXT**
+- [~] **Stage 4a — partial.** Predictive bisection CBF (eval + co-trained):
+  - **Phase 4a.1** (CBF bolt-on, no retrain): 84% success / 16% FOV / 0 pitch-roll violations.
+  - **Phase 4a.2** (CBF in training loop, 3M fine-tune + LR decay): 85.5% / 14.5% FOV / 0 violations (2M ckpt). Fine-tuning bought only 1.5pp over bolt-on. The bisection-only filter (which scales actions but cannot redirect them) throttles the policy on 87% of steps, capping success at ~85% regardless of training. Pitch/roll safety guarantee is real and free.
+  - **Phase 4a.3** (deferred): proper HOCBF/ECBF with analytical gradients through the SO(3) PD law, so the QP can redirect actions, not just throttle. Substantial rewrite (Ames 2019 Thm 8 with relative-degree-2 pole placement). Not yet attempted.
 - [ ] Stage 4b — future
 
 > **Decision (2026-05-27): Option B — decouple stages.** Stage 3a was originally specified as "inertia *on top of* 2b's noise/delay/DKF" but was implemented and trained on clean observations. Rather than re-add sensor noise concurrently with the 3a fixes (which violates the plan's "one change per stage" principle), we explicitly split 3a into a clean-obs sub-stage (`3a-v2`) and a noisy sub-stage (`3a-noisy`).
