@@ -120,15 +120,22 @@ depth_estimator:
 #   delay=1, sigma=0.015 + IMU DKF:        96.5% (3b-noisy-mild, 4M, 200 ep seed=1000)
 #   delay=3, sigma=0.03  + IMU DKF:         ~2% (3b-noisy-full; collapsed, stopped early)
 #   --- 6-DOF + CBF safety filter (Stage 4a) ---
-#   CBF bolt-on (no retrain), 3b-noisy-mild policy:    84%  / 16% FOV / 0 pitch-roll viol
-#   CBF in training loop, fine-tune 3M steps + LR decay: 85.5% / 14.5% FOV / 0 viol (2M ckpt)
-#   Fine-tuning bought only 1.5pp over bolt-on. The bisection CBF only
-#   *scales* actions (no direction change), so the policy can't learn a
-#   winning strategy — it's throttled on 87% of steps. The 11pp gap vs
-#   baseline is the cost of the current CBF formulation, not a fundamental
-#   safety-vs-performance trade. Phase 4a.3 would need to upgrade to proper
-#   HOCBF / ECBF with analytical gradients through the SO(3) PD law to
-#   allow the QP to redirect actions, not just throttle them.
+#   4a.1 bisection bolt-on (no retrain): 84.0% / 16.0% / 0 pitch-roll viol, 79% corr rate, 0.55 avg norm
+#   4a.2 bisection co-trained, 2M ckpt:  85.5% / 14.5% / 0 viol, 87% corr rate, 0.65 avg norm
+#   4a.3 HOCBF bolt-on (no retrain):     89.0% / 11.0% / ~0% actual viol*, 55% corr rate, 0.36 avg norm
+#   4a.3 HOCBF co-trained, 2.8M ckpt:    88.5% / 11.5% — fine-tuning did NOT help, see below.
+#   *Actual safety: max|pitch|=0.563 (under 0.611 limit), max|roll|=0.616 over by 0.005 rad on 0.1% of steps.
+#   The Phase 4a "violations" counter tracks h_inner_margin < 0, not real limit breaches.
+#
+#   Best CBF result locked: HOCBF on the existing 3b-noisy-mild 4M ckpt at
+#   alpha_fov=100, alpha_attitude=100, attitude_safety_margin=0.10. No new
+#   policy file — the safety guarantee comes from the wrapper, not new weights.
+#   Fine-tuning with HOCBF in the loop did not improve over the bolt-on result
+#   (the formulation is already minimally invasive; the locked policy operates
+#   near-optimally within the inner-margin safety envelope).
+#
+#   The remaining 7.5pp success cost (96.5% -> 89%) is the inherent price of
+#   guaranteed pitch/roll safety on this dynamics + action space.
 # Conclusion: the 4-dim image-plane DKF saturates between mild and full noise,
 # independent of the inner-loop dynamics (kinematic vs 6-DOF). IMU feedforward
 # eliminates the brake-penalty hack at mild noise but cannot close the full-spec

@@ -419,20 +419,29 @@ def main():
         help='Wrap env with CBFWrapper (Stage 4a safety filter)'
     )
     parser.add_argument(
-        '--cbf-alpha-fov', type=float, default=0.8,
-        help='CBF margin for FOV constraints (1=tight, ~0.8 default)'
+        '--cbf-method', type=str, default='hocbf',
+        choices=['hocbf', 'bisection'],
+        help='CBF solver: hocbf (Phase 4a.3) or bisection (4a.1, legacy)'
     )
     parser.add_argument(
-        '--cbf-alpha-att', type=float, default=0.3,
-        help='CBF margin for attitude constraints (0.3 default)'
+        '--cbf-alpha-fov', type=float, default=5.0,
+        help='CBF margin for FOV (hocbf: 1/s; bisection: per-step decay)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-att', type=float, default=5.0,
+        help='CBF margin for attitude (hocbf: 1/s; bisection: per-step decay)'
     )
     parser.add_argument(
         '--cbf-horizon-fov', type=int, default=3,
-        help='Prediction horizon (steps) for FOV constraints'
+        help='Prediction horizon for bisection (and hocbf fallback)'
     )
     parser.add_argument(
         '--cbf-horizon-att', type=int, default=15,
-        help='Prediction horizon (steps) for attitude constraints'
+        help='Prediction horizon for bisection (and hocbf fallback)'
+    )
+    parser.add_argument(
+        '--cbf-safety-margin', type=float, default=0.15,
+        help='HOCBF inner safety margin (rad) on max_pitch/max_roll'
     )
     args = parser.parse_args()
 
@@ -458,16 +467,16 @@ def main():
         from envs.wrappers.cbf_wrapper import CBFWrapper
         env = CBFWrapper(
             env,
+            method=args.cbf_method,
             alpha_fov=args.cbf_alpha_fov,
             alpha_attitude=args.cbf_alpha_att,
             horizon_fov=args.cbf_horizon_fov,
             horizon_attitude=args.cbf_horizon_att,
+            attitude_safety_margin=args.cbf_safety_margin,
             in_fov_only=True,
         )
-        print(f"CBF safety filter ENABLED: alpha_fov={args.cbf_alpha_fov} "
-              f"alpha_att={args.cbf_alpha_att} "
-              f"horizon_fov={args.cbf_horizon_fov} "
-              f"horizon_att={args.cbf_horizon_att}")
+        print(f"CBF safety filter ENABLED ({args.cbf_method}): "
+              f"alpha_fov={args.cbf_alpha_fov} alpha_att={args.cbf_alpha_att}")
 
     # --- Run evaluation ---
     print(f"Running {n_episodes} evaluation episodes "

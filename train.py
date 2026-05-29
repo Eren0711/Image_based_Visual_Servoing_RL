@@ -195,8 +195,10 @@ def load_config(config_path: str) -> dict:
 
 def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
              use_imu_dkf: bool = True, use_cbf: bool = False,
-             cbf_alpha_fov: float = 0.999, cbf_alpha_att: float = 0.7,
-             cbf_horizon_fov: int = 1, cbf_horizon_att: int = 8):
+             cbf_method: str = 'hocbf',
+             cbf_alpha_fov: float = 100.0, cbf_alpha_att: float = 100.0,
+             cbf_horizon_fov: int = 1, cbf_horizon_att: int = 8,
+             cbf_safety_margin: float = 0.10):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
@@ -238,10 +240,12 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
             from envs.wrappers.cbf_wrapper import CBFWrapper
             env = CBFWrapper(
                 env,
+                method=cbf_method,
                 alpha_fov=cbf_alpha_fov,
                 alpha_attitude=cbf_alpha_att,
                 horizon_fov=cbf_horizon_fov,
                 horizon_attitude=cbf_horizon_att,
+                attitude_safety_margin=cbf_safety_margin,
                 in_fov_only=True,
             )
 
@@ -291,23 +295,32 @@ def main():
     )
     parser.add_argument(
         '--cbf', action='store_true', default=False,
-        help='Enable CBF safety filter in training loop (Stage 4a Phase 2)'
+        help='Enable CBF safety filter in training loop (Stage 4a Phase 2/3)'
     )
     parser.add_argument(
-        '--cbf-alpha-fov', type=float, default=0.999,
-        help='CBF FOV margin (closer to 1 = more permissive)'
+        '--cbf-method', type=str, default='hocbf',
+        choices=['hocbf', 'bisection'],
+        help='CBF solver method'
     )
     parser.add_argument(
-        '--cbf-alpha-att', type=float, default=0.7,
+        '--cbf-alpha-fov', type=float, default=100.0,
+        help='CBF FOV margin (hocbf: 1/s; bisection: per-step decay)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-att', type=float, default=100.0,
         help='CBF attitude margin'
     )
     parser.add_argument(
         '--cbf-horizon-fov', type=int, default=1,
-        help='Prediction horizon (steps) for FOV constraint'
+        help='Prediction horizon (bisection / hocbf fallback)'
     )
     parser.add_argument(
         '--cbf-horizon-att', type=int, default=8,
-        help='Prediction horizon (steps) for attitude constraint'
+        help='Prediction horizon (bisection / hocbf fallback)'
+    )
+    parser.add_argument(
+        '--cbf-safety-margin', type=float, default=0.10,
+        help='HOCBF inner safety margin (rad) on attitude limits'
     )
     parser.add_argument(
         '--lr-decay', action='store_true', default=False,
@@ -359,10 +372,12 @@ def main():
     env_kwargs = dict(
         use_noise_delay=use_noise_delay, use_dkf=use_dkf,
         use_imu_dkf=use_imu_dkf, use_cbf=use_cbf,
+        cbf_method=args.cbf_method,
         cbf_alpha_fov=args.cbf_alpha_fov,
         cbf_alpha_att=args.cbf_alpha_att,
         cbf_horizon_fov=args.cbf_horizon_fov,
         cbf_horizon_att=args.cbf_horizon_att,
+        cbf_safety_margin=args.cbf_safety_margin,
     )
     vec_env = make_vec_env(
         make_env(config, **env_kwargs),

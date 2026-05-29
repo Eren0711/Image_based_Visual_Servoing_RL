@@ -25,56 +25,67 @@ import numpy as np
 import gymnasium as gym
 
 from safety.cbf_qp import CBFQPSolver
+from safety.cbf_qp_hocbf import HOCBFQPSolver
 
 
 class CBFWrapper(gym.Wrapper):
     """CBF-QP safety filter wrapper.
 
+    Two solver methods available via the `method` arg:
+      'bisection' (Phase 4a.1): 1D line-search on |u_RL|, horizon-predictor
+          via Multicopter6DOFLite.step. Robust to nonlinearity but can only
+          throttle, never redirect.
+      'hocbf' (Phase 4a.3, default): proper CBF-QP with analytical Lie
+          derivatives from a proxy control-affine linearization. Can pick
+          any safe direction near u_RL, not just throttled. Bisection
+          serves as fallback if the QP is infeasible.
+
     Args:
         env: a Gymnasium env (typically the full DKF-wrapped stack).
-        alpha_fov: CBF margin for FOV constraints (per step). Higher =
-            QP intervenes more aggressively. Default 1.0 = no margin
-            (just keep h ≥ 0 at next step).
-        alpha_attitude: CBF margin for pitch/roll constraints.
-        in_fov_only: if True, the FOV constraints are skipped when the
-            target is already out of FOV — the CBF doesn't try to recover
-            (the DKF wrapper handles re-acquisition). Default True.
-
-    Reads CBF parameters from the unwrapped env's camera and interceptor
-    config (alpha_hfov, alpha_vfov, max_pitch, max_roll, a_max, etc.).
+        method: 'hocbf' (default) or 'bisection'.
+        alpha_fov, alpha_attitude: CBF margins. For 'bisection' these are
+            per-step decay rates (1.0 = no margin). For 'hocbf' these are
+            class-K extended rates (1/s) — higher = stronger pushback.
+        in_fov_only: skip FOV constraints when target is out of FOV.
+        horizon_fov, horizon_attitude: only used by 'bisection' (and by
+            'hocbf' as the bisection-fallback prediction horizons).
     """
 
     def __init__(
         self,
         env: gym.Env,
-        alpha_fov: float = 0.8,
-        alpha_attitude: float = 0.3,
+        method: str = 'hocbf',
+        alpha_fov: float = 5.0,
+        alpha_attitude: float = 5.0,
         in_fov_only: bool = True,
         horizon_fov: int = 3,
         horizon_attitude: int = 15,
+        tau_rate: float = 0.05,
+        attitude_safety_margin: float = 0.15,
     ):
         super().__init__(env)
+        self.method = str(method)
+        if self.method not in ('hocbf', 'bisection'):
+            raise ValueError(f"method must be 'hocbf' or 'bisection', got {method!r}")
         self.alpha_fov = float(alpha_fov)
         self.alpha_attitude = float(alpha_attitude)
         self.in_fov_only = bool(in_fov_only)
         self.horizon_fov = int(horizon_fov)
         self.horizon_attitude = int(horizon_attitude)
+        self.tau_rate = float(tau_rate)
+        self.attitude_safety_margin = float(attitude_safety_margin)
 
-        # Find the base env (deepest unwrapped) — it holds interceptor, target,
-        # camera. We bind the solver lazily on first reset so any sub-wrappers
-        # that hold their own state are already initialized.
         self._solver = None
 
-        # Episode-aggregated stats
         self._ep_corrections = 0
         self._ep_steps = 0
         self._ep_violations = np.zeros(4, dtype=np.int64)
 
     def _build_solver(self) -> None:
-        """Build the CBFQPSolver from the unwrapped env's state."""
+        """Build the chosen solver from the unwrapped env's state."""
         base = self.env.unwrapped
         cam_fov = base.camera.get_fov_params()
-        params = {
+        common = {
             'a_max': base.a_max,
             'yaw_rate_max': base.yaw_rate_max,
             'dt': base.dt,
@@ -82,18 +93,38 @@ class CBFWrapper(gym.Wrapper):
             'tan_half_vfov': cam_fov['tan_half_vfov'],
             'max_pitch': base.max_pitch,
             'max_roll': base.max_roll,
-            'alpha_fov': self.alpha_fov,
-            'alpha_attitude': self.alpha_attitude,
             'in_fov_only': self.in_fov_only,
             'horizon_fov': self.horizon_fov,
             'horizon_attitude': self.horizon_attitude,
         }
-        self._solver = CBFQPSolver(
-            interceptor=base.interceptor,
-            target=base.target,
-            camera=base.camera,
-            params=params,
-        )
+        if self.method == 'bisection':
+            params = {
+                **common,
+                'alpha_fov': self.alpha_fov,
+                'alpha_attitude': self.alpha_attitude,
+            }
+            self._solver = CBFQPSolver(
+                interceptor=base.interceptor,
+                target=base.target,
+                camera=base.camera,
+                params=params,
+            )
+        else:  # 'hocbf'
+            params = {
+                **common,
+                'alpha_fov': self.alpha_fov,
+                'alpha_attitude': self.alpha_attitude,
+                'tau_rate': self.tau_rate,
+                'attitude_safety_margin': self.attitude_safety_margin,
+                'env_unwrapped': base,
+                'fallback': 'bisection',
+            }
+            self._solver = HOCBFQPSolver(
+                interceptor=base.interceptor,
+                target=base.target,
+                camera=base.camera,
+                params=params,
+            )
 
     def reset(self, **kwargs):
         """Reset the inner env and rebuild the solver."""
