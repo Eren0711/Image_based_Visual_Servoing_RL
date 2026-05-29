@@ -64,6 +64,8 @@ def evaluate_episode(model, env, deterministic: bool = True,
         'actions': [],
         'rewards': [],
         'outcome': 'running',
+        'cbf_corrections': 0,
+        'cbf_correction_norms': [],
     }
 
     done = False
@@ -81,8 +83,14 @@ def evaluate_episode(model, env, deterministic: bool = True,
         data['fov_margin'].append(info['fov_margin'])
         data['actions'].append(action.copy())
         data['rewards'].append(reward)
+        if 'cbf' in info:
+            if info['cbf']['corrected']:
+                data['cbf_corrections'] += 1
+            data['cbf_correction_norms'].append(info['cbf']['correction_norm'])
 
     data['outcome'] = info['episode_outcome']
+    if 'cbf_episode' in info:
+        data['cbf_episode'] = info['cbf_episode']
 
     # Convert lists to arrays
     for key in ['interceptor_pos', 'target_pos', 'p_bar', 'actions']:
@@ -335,6 +343,29 @@ def print_summary(all_data: list):
           f"{np.std(total_rewards):.2f}")
     print(f"{'='*60}")
 
+    # CBF stats (if present)
+    cbf_data = [d for d in all_data if 'cbf_episode' in d]
+    if cbf_data:
+        total_steps = sum(d['cbf_episode']['n_steps'] for d in cbf_data)
+        total_corr = sum(d['cbf_episode']['n_corrections'] for d in cbf_data)
+        total_infeas = sum(d['cbf_episode']['n_infeasible'] for d in cbf_data)
+        avg_corr_norm = np.mean([
+            d['cbf_episode']['avg_correction_norm']
+            for d in cbf_data
+            if d['cbf_episode']['n_corrections'] > 0
+        ]) if any(d['cbf_episode']['n_corrections'] > 0 for d in cbf_data) else 0.0
+        viol_counts = np.sum([
+            d['cbf_episode']['violations_per_constraint']
+            for d in cbf_data
+        ], axis=0)
+        print(f"\n  CBF safety filter:")
+        print(f"    Correction rate  : {100*total_corr/total_steps:.1f}% "
+              f"({total_corr}/{total_steps} steps)")
+        print(f"    Avg correction norm: {avg_corr_norm:.3f}")
+        print(f"    Infeasible solves: {total_infeas}")
+        print(f"    Violations per constraint "
+              f"(hfov,vfov,pitch,roll): {viol_counts.tolist()}")
+
     # Per-outcome stats
     if n_success > 0:
         success_dists = [d['relative_distance'][-1]
@@ -383,6 +414,26 @@ def main():
         '--seed', type=int, default=42,
         help='Random seed for evaluation'
     )
+    parser.add_argument(
+        '--cbf', action='store_true',
+        help='Wrap env with CBFWrapper (Stage 4a safety filter)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-fov', type=float, default=0.8,
+        help='CBF margin for FOV constraints (1=tight, ~0.8 default)'
+    )
+    parser.add_argument(
+        '--cbf-alpha-att', type=float, default=0.3,
+        help='CBF margin for attitude constraints (0.3 default)'
+    )
+    parser.add_argument(
+        '--cbf-horizon-fov', type=int, default=3,
+        help='Prediction horizon (steps) for FOV constraints'
+    )
+    parser.add_argument(
+        '--cbf-horizon-att', type=int, default=15,
+        help='Prediction horizon (steps) for attitude constraints'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -403,6 +454,20 @@ def main():
 
     # --- Create environment ---
     env = InterceptionEnv(config=config)
+    if args.cbf:
+        from envs.wrappers.cbf_wrapper import CBFWrapper
+        env = CBFWrapper(
+            env,
+            alpha_fov=args.cbf_alpha_fov,
+            alpha_attitude=args.cbf_alpha_att,
+            horizon_fov=args.cbf_horizon_fov,
+            horizon_attitude=args.cbf_horizon_att,
+            in_fov_only=True,
+        )
+        print(f"CBF safety filter ENABLED: alpha_fov={args.cbf_alpha_fov} "
+              f"alpha_att={args.cbf_alpha_att} "
+              f"horizon_fov={args.cbf_horizon_fov} "
+              f"horizon_att={args.cbf_horizon_att}")
 
     # --- Run evaluation ---
     print(f"Running {n_episodes} evaluation episodes "
