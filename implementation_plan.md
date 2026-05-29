@@ -19,7 +19,12 @@
   - **4a.2 — bisection co-trained** (3M fine-tune + linear LR decay): 85.5% / 14.5% / 0 viol (2M ckpt). +1.5pp over bolt-on. Bisection can only *scale* actions, so the policy can't escape the throttle.
   - **4a.3 — proper HOCBF** (analytical Lie derivatives via proxy control-affine linearization + quadprog QP + inner safety margin): **89.0% / 11.0% FOV / ~0% actual attitude exceedance** (max|pitch|=0.563, max|roll|=0.616 over by 0.005 rad on 0.1% of steps), at correction rate 55% / avg norm 0.36 — substantially less invasive than bisection. Co-training with HOCBF gave 88.5% (2.8M ckpt), did not beat bolt-on. **Locked: existing 3b-noisy-mild 4M ckpt + HOCBF wrapper at alpha=100, margin=0.10.**
   - The 7.5pp cost vs 96.5% no-CBF baseline is the inherent price of guaranteed pitch/roll safety on this dynamics + action space.
-- [ ] Stage 4b — future
+- [x] **Stage 4b — Realistic Perception + Wind Disturbance.** Domain-randomized training on top of the full HOCBF stack: OU-process wind with linear drag + intermittent detection model (sigmoid in distance and FOV-margin) + linear LR decay, 5M timesteps warm-started from the 3b 4M ckpt. **Locked best: 1.0M ckpt** (later checkpoints regress despite LR decay — same overtraining pattern as previous stages, evidently inherent to PPO at this fine-tune scale).
+  - Multi-condition 200-ep eval (seed=1000), 4b 1.0M vs 3b locked:
+    - **Nominal (σ=1.0, β₃=1.0, ~50% detector drop):  91.0% vs 76.5%  (+14.5pp)**
+    - Hard    (σ=1.5, β₃=0.0, ~75% drops):           74.0% vs 51.0%  (+23.0pp)
+    - Worst   (σ=1.5, β₃=−1.0, ~92% drops):           31.5% vs 16.0%  (+15.5pp)
+  - Pays ~5pp in disturbance-free conditions (84% vs 89% on clean) for major gains under realistic noise/disturbance. All plan success criteria met: >30% on worst-case ✓, graceful degradation ✓, recovers from temporary detection loss ✓.
 
 > **Decision (2026-05-27): Option B — decouple stages.** Stage 3a was originally specified as "inertia *on top of* 2b's noise/delay/DKF" but was implemented and trained on clean observations. Rather than re-add sensor noise concurrently with the 3a fixes (which violates the plan's "one change per stage" principle), we explicitly split 3a into a clean-obs sub-stage (`3a-v2`) and a noisy sub-stage (`3a-noisy`).
 

@@ -136,6 +136,16 @@ depth_estimator:
 #
 #   The remaining 7.5pp success cost (96.5% -> 89%) is the inherent price of
 #   guaranteed pitch/roll safety on this dynamics + action space.
+#
+#   --- Stage 4b: realistic perception + wind disturbance ---
+#   Multi-condition 200-ep eval (seed=1000), 4b 1.0M (locked) vs 3b 4M + HOCBF:
+#                                          4b 1.0M      3b locked
+#     Clean (no wind, no miss):            84.0%        89.0%       -5.0pp (DR cost)
+#     Nominal (sig=1.0, b3=1.0, drop~50%): 91.0%        76.5%      +14.5pp
+#     Hard    (sig=1.5, b3=0,  drop~75%):  74.0%        51.0%      +23.0pp
+#     Worst   (sig=1.5, b3=-1, drop~92%):  31.5%        16.0%      +15.5pp
+#   The 4b policy pays 5pp in disturbance-free conditions to gain 14-23pp under
+#   realistic noise/wind/missed-detection conditions. All plan criteria met.
 # Conclusion: the 4-dim image-plane DKF saturates between mild and full noise,
 # independent of the inner-loop dynamics (kinematic vs 6-DOF). IMU feedforward
 # eliminates the brake-penalty hack at mild noise but cannot close the full-spec
@@ -229,6 +239,32 @@ training:
   # Deterministic eval cadence (Stage 3a-v2 lesson: trust det-eval, not stochastic)
   eval_freq: 1000000          # run det-eval every N training steps
   eval_n_episodes: 20         # episodes per det-eval run (~20s wall-time)
+
+# --- Stage 4b: realistic perception + wind disturbances ---
+# Domain-randomization bands are the "hard" ranges agreed for training.
+# Worst-case eval-time bands (β₃=-1, σ=1.5) gave the locked HOCBF policy
+# 30% success and 70% FOV-loss; the trained policy should beat that.
+stage4b:
+  wind:
+    sigma: 1.0                   # OU noise intensity (m/s · s^-0.5).
+    theta: 0.5                   # OU mean-reversion rate (1/s); 1/θ = τ_corr.
+    k_drag: 0.1                  # Linear drag coupling (1/s).
+    randomization_ranges:
+      sigma: [0.0, 2.0]          # 0 = no wind; 2 = ~2 m/s RMS gusts
+      theta: [0.3, 1.0]          # 1-3.3s correlation time
+      k_drag: [0.05, 0.2]
+  detection:
+    # p_detect = sigmoid(β₁/d − β₂·(1 − fov_margin) + β₃)
+    # Default nominal: ~88% at d=10m centered, ~50% at d=30m centered.
+    beta_1: 8.0                  # distance term
+    beta_2: 4.0                  # FOV-edge penalty
+    beta_3: 1.0                  # bias
+    sigma_base: 0.0              # extra noise on p_bar at d=0
+    sigma_slope: 0.0005          # extra noise per metre of distance
+    randomization_ranges:
+      beta_1: [4.0, 14.0]        # at β₁=4 the distance term collapses fast
+      beta_2: [2.0, 6.0]
+      beta_3: [-1.0, 2.0]        # β₃=-1 + σ=1.5 = worst-case (30% success eval)
 
 # --- Evaluation ---
 evaluation:

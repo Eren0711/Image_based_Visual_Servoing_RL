@@ -198,7 +198,9 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
              cbf_method: str = 'hocbf',
              cbf_alpha_fov: float = 100.0, cbf_alpha_att: float = 100.0,
              cbf_horizon_fov: int = 1, cbf_horizon_att: int = 8,
-             cbf_safety_margin: float = 0.10):
+             cbf_safety_margin: float = 0.10,
+             use_wind: bool = False, use_intermittent_det: bool = False,
+             domain_randomize: bool = False):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
@@ -212,6 +214,36 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
     """
     def _init():
         env = InterceptionEnv(config=config)
+
+        # Stage 4b: wind and intermittent detection sit between the env and
+        # NoiseDelay so the existing delay buffer sees the post-miss in_fov
+        # flag. Order: env → Wind → IntermittentDet → NoiseDelay → DKF → CBF.
+        if use_wind:
+            from envs.wrappers.wind_wrapper import WindWrapper
+            wind_cfg = config.get('stage4b', {}).get('wind', {})
+            env = WindWrapper(
+                env,
+                sigma=wind_cfg.get('sigma', 1.0),
+                theta=wind_cfg.get('theta', 0.5),
+                k_drag=wind_cfg.get('k_drag', 0.1),
+                randomize_per_episode=domain_randomize,
+                randomization_ranges=wind_cfg.get('randomization_ranges', None),
+            )
+
+        if use_intermittent_det:
+            from envs.wrappers.intermittent_detection_wrapper import \
+                IntermittentDetectionWrapper
+            det_cfg = config.get('stage4b', {}).get('detection', {})
+            env = IntermittentDetectionWrapper(
+                env,
+                beta_1=det_cfg.get('beta_1', 8.0),
+                beta_2=det_cfg.get('beta_2', 4.0),
+                beta_3=det_cfg.get('beta_3', 1.0),
+                sigma_base=det_cfg.get('sigma_base', 0.0),
+                sigma_slope=det_cfg.get('sigma_slope', 0.0005),
+                randomize_per_episode=domain_randomize,
+                randomization_ranges=det_cfg.get('randomization_ranges', None),
+            )
 
         if use_noise_delay:
             from envs.wrappers.noise_delay_wrapper import NoiseDelayWrapper
@@ -323,6 +355,22 @@ def main():
         help='HOCBF inner safety margin (rad) on attitude limits'
     )
     parser.add_argument(
+        '--wind', action='store_true', default=False,
+        help='Enable WindWrapper (Stage 4b — OU-process wind + drag)'
+    )
+    parser.add_argument(
+        '--intermittent-det', action='store_true', default=False,
+        help='Enable IntermittentDetectionWrapper (Stage 4b)'
+    )
+    parser.add_argument(
+        '--domain-randomize', action='store_true', default=False,
+        help='Sample wind/detection params per episode (Stage 4b training)'
+    )
+    parser.add_argument(
+        '--stage4b', action='store_true', default=False,
+        help='Shortcut: enable wind + intermittent-det + domain-randomize'
+    )
+    parser.add_argument(
         '--lr-decay', action='store_true', default=False,
         help='Linear LR decay from initial value to 0 over training'
     )
@@ -352,6 +400,9 @@ def main():
         use_noise_delay = True
 
     use_cbf = args.cbf
+    use_wind = args.wind or args.stage4b
+    use_intermittent_det = args.intermittent_det or args.stage4b
+    domain_randomize = args.domain_randomize or args.stage4b
 
     wrapper_str = ''
     if use_noise_delay:
@@ -365,6 +416,12 @@ def main():
                         f'alpha_att={args.cbf_alpha_att} '
                         f'h_fov={args.cbf_horizon_fov} '
                         f'h_att={args.cbf_horizon_att})\n')
+    if use_wind:
+        dr_tag = ' [DR]' if domain_randomize else ''
+        wrapper_str += f'  + Wind (OU + drag){dr_tag}\n'
+    if use_intermittent_det:
+        dr_tag = ' [DR]' if domain_randomize else ''
+        wrapper_str += f'  + IntermittentDetection{dr_tag}\n'
 
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
@@ -378,6 +435,9 @@ def main():
         cbf_horizon_fov=args.cbf_horizon_fov,
         cbf_horizon_att=args.cbf_horizon_att,
         cbf_safety_margin=args.cbf_safety_margin,
+        use_wind=use_wind,
+        use_intermittent_det=use_intermittent_det,
+        domain_randomize=domain_randomize,
     )
     vec_env = make_vec_env(
         make_env(config, **env_kwargs),
