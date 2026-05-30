@@ -1,0 +1,55 @@
+### seed=42 step=1000000 cond=nominal ###
+  Success      :  90.5%  (181/200)
+  max|roll|    : 0.622  exceed: 9 (0.03% of steps)
+### seed=42 step=1000000 cond=worst ###
+  Success      :  27.0%  (54/200)
+  max|roll|    : 0.631  exceed: 12 (0.04% of steps)
+### seed=42 step=1200000 cond=nominal ###
+  Success      :  89.0%  (178/200)
+  max|roll|    : 0.632  exceed: 7 (0.02% of steps)
+### seed=42 step=1200000 cond=worst ###
+  Success      :  21.0%  (42/200)
+  max|roll|    : 0.622  exceed: 5 (0.02% of steps)
+### seed=42 step=1400000 cond=nominal ###
+  Success      :  88.0%  (176/200)
+  max|roll|    : 0.630  exceed: 10 (0.03% of steps)
+### seed=42 step=1400000 cond=worst ###
+  Success      :  27.5%  (55/200)
+  max|roll|    : 0.615  exceed: 4 (0.01% of steps)
+### seed=123 step=1000000 cond=nominal ###
+  Success      :  94.0%  (188/200)
+  max|roll|    : 0.620  exceed: 1 (0.00% of steps)
+### seed=123 step=1000000 cond=worst ###
+  Success      :  31.0%  (62/200)
+  max|roll|    : 0.633  exceed: 14 (0.05% of steps)
+### seed=123 step=1200000 cond=nominal ###
+  Success      :  95.0%  (190/200)
+  max|roll|    : 0.625  exceed: 1 (0.00% of steps)
+### seed=123 step=1200000 cond=worst ###
+  Success      :  28.0%  (56/200)
+  max|roll|    : 0.626  exceed: 5 (0.02% of steps)
+### seed=123 step=1400000 cond=nominal ###
+  Success      :  93.5%  (187/200)
+  max|roll|    : 0.613  exceed: 1 (0.00% of steps)
+### seed=123 step=1400000 cond=worst ###
+  Success      :  23.5%  (47/200)
+  max|roll|    : 0.620  exceed: 1 (0.00% of steps)
+### seed=7 step=1000000 cond=nominal ###
+  Success      :  85.5%  (171/200)
+  max|roll|    : 0.629  exceed: 14 (0.04% of steps)
+### seed=7 step=1000000 cond=worst ###
+  Success      :  19.0%  (38/200)
+  max|roll|    : 0.622  exceed: 4 (0.01% of steps)
+### seed=7 step=1200000 cond=nominal ###
+  Success      :  89.0%  (178/200)
+  max|roll|    : 0.617  exceed: 3 (0.01% of steps)
+### seed=7 step=1200000 cond=worst ###
+  Success      :  20.5%  (41/200)
+  max|roll|    : 0.631  exceed: 12 (0.04% of steps)
+### seed=7 step=1400000 cond=nominal ###
+  Success      :  87.0%  (174/200)
+  max|roll|    : 0.635  exceed: 8 (0.02% of steps)
+### seed=7 step=1400000 cond=worst ###
+  Success      :  20.0%  (40/200)
+  max|roll|    : 0.638  exceed: 11 (0.04% of steps)
+=== EVAL MATRIX DONE Sat May 30 21:30:56 +03 2026 ===

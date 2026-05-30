@@ -389,6 +389,11 @@ def main():
         help='Linear LR decay from initial value to 0 over training'
     )
     parser.add_argument(
+        '--seed', type=int, default=None,
+        help='Master seed for reproducible runs (PPO init + vec_env). '
+             'Used for multi-seed variance studies; None = nondeterministic.'
+    )
+    parser.add_argument(
         '--hardnet', action='store_true', default=False,
         help='Stage 4a Phase 4: in-policy differentiable CBF projection '
              '(HardNet). Adds CBFContextWrapper and uses the custom policy. '
@@ -478,6 +483,7 @@ def main():
     vec_env = make_vec_env(
         make_env(config, **env_kwargs),
         n_envs=n_envs,
+        seed=args.seed,
     )
 
     # --- Learning rate (constant or linear-decay schedule) ---
@@ -522,6 +528,7 @@ def main():
             clip_range=train_cfg['clip_range'],
             ent_coef=train_cfg['ent_coef'],
             policy_kwargs=policy_kwargs,
+            seed=args.seed,
             verbose=1,
             tensorboard_log=log_dir,
         )
@@ -569,6 +576,7 @@ def main():
             gae_lambda=train_cfg['gae_lambda'],
             clip_range=train_cfg['clip_range'],
             ent_coef=train_cfg['ent_coef'],
+            seed=args.seed,
             verbose=1,
             tensorboard_log=log_dir,
         )
