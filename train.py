@@ -200,7 +200,8 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
              cbf_horizon_fov: int = 1, cbf_horizon_att: int = 8,
              cbf_safety_margin: float = 0.10,
              use_wind: bool = False, use_intermittent_det: bool = False,
-             domain_randomize: bool = False):
+             domain_randomize: bool = False,
+             use_cbf_context: bool = False):
     """Factory function for creating InterceptionEnv instances.
 
     Args:
@@ -279,6 +280,19 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
                 horizon_attitude=cbf_horizon_att,
                 attitude_safety_margin=cbf_safety_margin,
                 in_fov_only=True,
+            )
+
+        # Stage 4a Phase 4 (HardNet): append CBF (A, b) coefficients to the
+        # observation so the in-policy differentiable projection can consume
+        # them. Mutually exclusive with the external CBF filter (use_cbf):
+        # the projection replaces the filter. Must be the OUTERMOST wrapper.
+        if use_cbf_context:
+            from envs.wrappers.cbf_context_wrapper import CBFContextWrapper
+            env = CBFContextWrapper(
+                env,
+                alpha_fov=cbf_alpha_fov,
+                alpha_attitude=cbf_alpha_att,
+                attitude_safety_margin=cbf_safety_margin,
             )
 
         return env
@@ -374,6 +388,16 @@ def main():
         '--lr-decay', action='store_true', default=False,
         help='Linear LR decay from initial value to 0 over training'
     )
+    parser.add_argument(
+        '--hardnet', action='store_true', default=False,
+        help='Stage 4a Phase 4: in-policy differentiable CBF projection '
+             '(HardNet). Adds CBFContextWrapper and uses the custom policy. '
+             'Replaces the external CBF filter (do not combine with --cbf).'
+    )
+    parser.add_argument(
+        '--hardnet-proj-iters', type=int, default=20,
+        help='Dykstra iterations in the HardNet projection layer'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -403,6 +427,12 @@ def main():
     use_wind = args.wind or args.stage4b
     use_intermittent_det = args.intermittent_det or args.stage4b
     domain_randomize = args.domain_randomize or args.stage4b
+    use_hardnet = args.hardnet
+    if use_hardnet and use_cbf:
+        raise SystemExit(
+            "Error: --hardnet and --cbf are mutually exclusive. HardNet's "
+            "in-policy projection replaces the external CBF filter."
+        )
 
     wrapper_str = ''
     if use_noise_delay:
@@ -422,6 +452,11 @@ def main():
     if use_intermittent_det:
         dr_tag = ' [DR]' if domain_randomize else ''
         wrapper_str += f'  + IntermittentDetection{dr_tag}\n'
+    if use_hardnet:
+        wrapper_str += (f'  + CBFContext (HardNet in-policy projection, '
+                        f'alpha_fov={args.cbf_alpha_fov} '
+                        f'alpha_att={args.cbf_alpha_att} '
+                        f'margin={args.cbf_safety_margin})\n')
 
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
@@ -438,6 +473,7 @@ def main():
         use_wind=use_wind,
         use_intermittent_det=use_intermittent_det,
         domain_randomize=domain_randomize,
+        use_cbf_context=use_hardnet,
     )
     vec_env = make_vec_env(
         make_env(config, **env_kwargs),
@@ -462,7 +498,53 @@ def main():
         lr_desc = f'{base_lr} (constant)'
 
     # --- Create or load model ---
-    if args.resume:
+    if use_hardnet:
+        # HardNet uses a custom policy and a 36-D augmented observation, so a
+        # plain PPO.load (which expects matching obs space + policy class)
+        # won't work. Build a fresh PPO with the HardNet policy, then (if
+        # resuming) copy the matching network weights from the base model.
+        from safety.hardnet_policy import HardNetActorCriticPolicy
+        print("Creating PPO with HardNet (in-policy CBF projection)...")
+        policy_kwargs = dict(
+            n_base=16,
+            n_constraints=4,
+            proj_iters=args.hardnet_proj_iters,
+        )
+        model = PPO(
+            policy=HardNetActorCriticPolicy,
+            env=vec_env,
+            learning_rate=learning_rate,
+            n_steps=train_cfg['n_steps'],
+            batch_size=train_cfg['batch_size'],
+            n_epochs=train_cfg['n_epochs'],
+            gamma=train_cfg['gamma'],
+            gae_lambda=train_cfg['gae_lambda'],
+            clip_range=train_cfg['clip_range'],
+            ent_coef=train_cfg['ent_coef'],
+            policy_kwargs=policy_kwargs,
+            verbose=1,
+            tensorboard_log=log_dir,
+        )
+        if args.resume:
+            print(f"  Warm-starting HardNet from: {args.resume}")
+            base_model = PPO.load(args.resume, device=model.device)
+            # The MLP / action_net / value_net / log_std see only the 16-D
+            # base obs (via the slicing extractor), so their shapes match the
+            # vanilla policy exactly. features_extractor has no params in
+            # either case. strict=False tolerates any key differences.
+            src = base_model.policy.state_dict()
+            tgt = model.policy.state_dict()
+            copied, skipped = [], []
+            for kkey, val in src.items():
+                if kkey in tgt and tgt[kkey].shape == val.shape:
+                    tgt[kkey] = val
+                    copied.append(kkey)
+                else:
+                    skipped.append(kkey)
+            model.policy.load_state_dict(tgt, strict=False)
+            print(f"  Warm-start copied {len(copied)} param tensors, "
+                  f"skipped {len(skipped)}: {skipped}")
+    elif args.resume:
         print(f"Resuming training from: {args.resume}")
         # Override tensorboard_log explicitly — PPO.load restores the original
         # path from the saved model, which sends fine-tune runs to the parent
