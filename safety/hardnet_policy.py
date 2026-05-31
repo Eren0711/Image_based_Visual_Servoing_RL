@@ -137,6 +137,44 @@ class HardNetActorCriticPolicy(ActorCriticPolicy):
         )
 
     # ---------------------------------------------------------------- #
+    # Intervention D: feasibility-loss support                          #
+    # ---------------------------------------------------------------- #
+    def feasibility_terms(self, obs: torch.Tensor) -> dict:
+        """Recompute raw vs projected means and projection stats for a batch.
+
+        Used by the D-PPO subclass to (a) add the auxiliary feasibility loss
+        λ·mean‖u_raw − u_safe‖² and (b) log instrumentation. Mirrors the
+        actor forward path: extract pi-features → mlp_extractor.forward_actor
+        → action_net → projection.
+
+        Returns dict with:
+            'dist'        : (B,) per-sample ‖u_raw − u_safe‖ (Euclidean).
+            'sq_dist_mean': scalar mean ‖u_raw − u_safe‖² (the aux loss term).
+            'active'      : (B,) bool — projection moved the action
+                            (dist > tol), i.e. u_raw was infeasible.
+            'n_active_constraints': (B,) count of CBF rows with ‖A_i‖>0
+                            (FOV constraints drop out when target not in FOV).
+        """
+        # Actor feature path (shared or pi-specific extractor)
+        features = super().extract_features(obs, self.pi_features_extractor)
+        latent_pi = self.mlp_extractor.forward_actor(features)
+        u_raw = self.action_net(latent_pi)
+        A, b = self._split_context(obs)
+        u_safe = self.projection(u_raw, A, b)
+        diff = u_raw - u_safe
+        sq = (diff * diff).sum(dim=-1)              # (B,)
+        dist = torch.sqrt(sq + 1e-12)
+        active = dist > 1e-4
+        a_norm2 = (A * A).sum(dim=-1)               # (B, k)
+        n_active = (a_norm2 > 1e-8).sum(dim=-1)     # (B,)
+        return {
+            'dist': dist,
+            'sq_dist_mean': sq.mean(),
+            'active': active,
+            'n_active_constraints': n_active,
+        }
+
+    # ---------------------------------------------------------------- #
     # Public overrides: stash context, then defer to the base impl     #
     # ---------------------------------------------------------------- #
     def forward(self, obs: torch.Tensor, deterministic: bool = False):

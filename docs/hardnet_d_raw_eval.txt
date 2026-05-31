@@ -1,0 +1,55 @@
+### d seed=42 step=1000000 cond=nominal ###
+  Success      :  89.0%  (178/200)
+  max|roll|    : 0.589  exceed: 0 (0.00% of steps)
+### d seed=42 step=1000000 cond=worst ###
+  Success      :  35.5%  (71/200)
+  max|roll|    : 0.596  exceed: 0 (0.00% of steps)
+### d seed=42 step=1200000 cond=nominal ###
+  Success      :  87.5%  (175/200)
+  max|roll|    : 0.599  exceed: 0 (0.00% of steps)
+### d seed=42 step=1200000 cond=worst ###
+  Success      :  39.0%  (78/200)
+  max|roll|    : 0.596  exceed: 0 (0.00% of steps)
+### d seed=42 step=1400000 cond=nominal ###
+  Success      :  92.5%  (185/200)
+  max|roll|    : 0.611  exceed: 1 (0.00% of steps)
+### d seed=42 step=1400000 cond=worst ###
+  Success      :  34.0%  (68/200)
+  max|roll|    : 0.597  exceed: 0 (0.00% of steps)
+### d seed=123 step=1000000 cond=nominal ###
+  Success      :  88.5%  (177/200)
+  max|roll|    : 0.579  exceed: 0 (0.00% of steps)
+### d seed=123 step=1000000 cond=worst ###
+  Success      :  40.5%  (81/200)
+  max|roll|    : 0.593  exceed: 0 (0.00% of steps)
+### d seed=123 step=1200000 cond=nominal ###
+  Success      :  90.0%  (180/200)
+  max|roll|    : 0.603  exceed: 0 (0.00% of steps)
+### d seed=123 step=1200000 cond=worst ###
+  Success      :  27.5%  (55/200)
+  max|roll|    : 0.624  exceed: 1 (0.00% of steps)
+### d seed=123 step=1400000 cond=nominal ###
+  Success      :  87.0%  (174/200)
+  max|roll|    : 0.584  exceed: 0 (0.00% of steps)
+### d seed=123 step=1400000 cond=worst ###
+  Success      :  31.5%  (63/200)
+  max|roll|    : 0.598  exceed: 0 (0.00% of steps)
+### d seed=7 step=1000000 cond=nominal ###
+  Success      :  85.0%  (170/200)
+  max|roll|    : 0.583  exceed: 0 (0.00% of steps)
+### d seed=7 step=1000000 cond=worst ###
+  Success      :  29.0%  (58/200)
+  max|roll|    : 0.596  exceed: 0 (0.00% of steps)
+### d seed=7 step=1200000 cond=nominal ###
+  Success      :  91.0%  (182/200)
+  max|roll|    : 0.609  exceed: 0 (0.00% of steps)
+### d seed=7 step=1200000 cond=worst ###
+  Success      :  37.5%  (75/200)
+  max|roll|    : 0.606  exceed: 0 (0.00% of steps)
+### d seed=7 step=1400000 cond=nominal ###
+  Success      :  87.5%  (175/200)
+  max|roll|    : 0.577  exceed: 0 (0.00% of steps)
+### d seed=7 step=1400000 cond=worst ###
+  Success      :  30.5%  (61/200)
+  max|roll|    : 0.603  exceed: 0 (0.00% of steps)
+=== D EVAL MATRIX DONE Sun May 31 18:34:18 +03 2026 ===

@@ -463,6 +463,12 @@ def main():
         help='Timesteps over which the DR curriculum anneals to full-hard '
              '(then holds). Default 2M of a 3M run.'
     )
+    parser.add_argument(
+        '--feasibility-coef', type=float, default=None,
+        help='Intervention D: weight λ on the auxiliary feasibility loss '
+             'λ·mean‖u_raw−u_safe‖². Requires --hardnet. Uses HardNetDPPO. '
+             'Keep small (~0.05) to avoid a lazy policy. None = off.'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -522,6 +528,9 @@ def main():
                         f'alpha_fov={args.cbf_alpha_fov} '
                         f'alpha_att={args.cbf_alpha_att} '
                         f'margin={args.cbf_safety_margin})\n')
+        if args.feasibility_coef is not None:
+            wrapper_str += (f'  + Intervention D: feasibility loss '
+                            f'λ={args.feasibility_coef}\n')
 
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
@@ -575,14 +584,13 @@ def main():
         # won't work. Build a fresh PPO with the HardNet policy, then (if
         # resuming) copy the matching network weights from the base model.
         from safety.hardnet_policy import HardNetActorCriticPolicy
-        print("Creating PPO with HardNet (in-policy CBF projection)...")
         policy_kwargs = dict(
             n_base=16,
             n_constraints=4,
             proj_iters=args.hardnet_proj_iters,
             max_log_std=args.max_log_std,
         )
-        model = PPO(
+        ppo_kwargs = dict(
             policy=HardNetActorCriticPolicy,
             env=vec_env,
             learning_rate=learning_rate,
@@ -598,6 +606,16 @@ def main():
             verbose=1,
             tensorboard_log=log_dir,
         )
+        if args.feasibility_coef is not None:
+            # Intervention D: PPO + auxiliary feasibility loss.
+            from safety.hardnet_ppo import HardNetDPPO
+            print(f"Creating HardNet-D PPO (feasibility_coef="
+                  f"{args.feasibility_coef})...")
+            model = HardNetDPPO(
+                feasibility_coef=args.feasibility_coef, **ppo_kwargs)
+        else:
+            print("Creating PPO with HardNet (in-policy CBF projection)...")
+            model = PPO(**ppo_kwargs)
         if args.resume:
             print(f"  Warm-starting HardNet from: {args.resume}")
             base_model = PPO.load(args.resume, device=model.device)
