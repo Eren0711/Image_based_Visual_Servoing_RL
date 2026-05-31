@@ -74,10 +74,16 @@ class HardNetActorCriticPolicy(ActorCriticPolicy):
     """
 
     def __init__(self, *args, n_base: int = 16, n_constraints: int = 4,
-                 proj_iters: int = 20, **kwargs):
+                 proj_iters: int = 20, max_log_std: float = None, **kwargs):
         self._n_base = int(n_base)
         self._n_constraints = int(n_constraints)
         self._proj_iters = int(proj_iters)
+        # Intervention C: optional hard cap on log_std. The baseline HardNet
+        # run saw action std blow up to 2.68 (log_std≈0.99), diffusing the
+        # stochastic rollouts PPO learns from. Capping log_std at, e.g., 0.0
+        # (std≤1.0) prevents that runaway while still allowing exploration.
+        # None = no cap (original behavior).
+        self._max_log_std = max_log_std
         # Force our slicing extractor (keeps feature dim = n_base).
         kwargs['features_extractor_class'] = SlicingFlattenExtractor
         fe_kwargs = dict(kwargs.get('features_extractor_kwargs', {}) or {})
@@ -119,7 +125,12 @@ class HardNetActorCriticPolicy(ActorCriticPolicy):
         else:
             mean_safe = mean_raw
         if isinstance(self.action_dist, DiagGaussianDistribution):
-            return self.action_dist.proba_distribution(mean_safe, self.log_std)
+            log_std = self.log_std
+            if self._max_log_std is not None:
+                # Differentiable upper clamp: keeps gradient below the cap,
+                # zeroes it above. Prevents the std runaway (Intervention C).
+                log_std = torch.clamp(log_std, max=self._max_log_std)
+            return self.action_dist.proba_distribution(mean_safe, log_std)
         raise ValueError(
             "HardNetActorCriticPolicy only supports DiagGaussianDistribution "
             "(continuous actions)."

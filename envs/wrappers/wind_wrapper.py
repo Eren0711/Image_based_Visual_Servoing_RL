@@ -99,6 +99,34 @@ class WindWrapper(gym.Wrapper):
         self._base = base  # cached reference to unwrapped env
         self._dt = dt
 
+        # Curriculum DR (Intervention B): when enabled, the per-episode
+        # sampling band is linearly interpolated from an *easy* band (low
+        # wind) to the configured full-hard band as `_curriculum_frac` goes
+        # 0 → 1. A CurriculumCallback advances the frac during training.
+        self._curriculum = False
+        self._curriculum_frac = 1.0  # default = full-hard (no curriculum)
+        self._easy_ranges = None
+
+    def enable_curriculum(self, easy_ranges: dict = None) -> None:
+        """Turn on curriculum annealing of the DR band.
+
+        Args:
+            easy_ranges: the band at frac=0 (episode start of training).
+                Defaults to a light-wind band. The frac=1 band is the
+                wrapper's configured `randomization_ranges` (full-hard).
+        """
+        self._curriculum = True
+        # Easy = near-calm wind. theta/k_drag bands kept (they're benign).
+        default_easy = {
+            'sigma': (0.0, 0.5),
+            'theta': self.randomization_ranges['theta'],
+            'k_drag': self.randomization_ranges['k_drag'],
+        }
+        self._easy_ranges = {**default_easy, **(easy_ranges or {})}
+
+    def set_curriculum_frac(self, frac: float) -> None:
+        self._curriculum_frac = float(np.clip(frac, 0.0, 1.0))
+
     def __getattr__(self, name):
         """Forward attribute access to the wrapped env (for compatibility
         with downstream wrappers like NoiseDelayWrapper that expect to read
@@ -108,13 +136,24 @@ class WindWrapper(gym.Wrapper):
             raise AttributeError(name)
         return getattr(self.env, name)
 
+    def _current_band(self, key: str) -> tuple:
+        """Return the (lo, hi) sampling band for `key`, applying curriculum
+        interpolation between easy and full-hard if enabled."""
+        hard = self.randomization_ranges[key]
+        if not self._curriculum:
+            return hard
+        easy = self._easy_ranges[key]
+        f = self._curriculum_frac
+        lo = easy[0] + f * (hard[0] - easy[0])
+        hi = easy[1] + f * (hard[1] - easy[1])
+        return (lo, hi)
+
     def _maybe_randomize(self) -> None:
         if not self.randomize_per_episode:
             return
-        r = self.randomization_ranges
-        new_sigma = float(self._rand_rng.uniform(*r['sigma']))
-        new_theta = float(self._rand_rng.uniform(*r['theta']))
-        new_kdrag = float(self._rand_rng.uniform(*r['k_drag']))
+        new_sigma = float(self._rand_rng.uniform(*self._current_band('sigma')))
+        new_theta = float(self._rand_rng.uniform(*self._current_band('theta')))
+        new_kdrag = float(self._rand_rng.uniform(*self._current_band('k_drag')))
         self.wind_model.sigma = new_sigma
         self.wind_model.theta = new_theta
         self.wind_model.k_drag = new_kdrag

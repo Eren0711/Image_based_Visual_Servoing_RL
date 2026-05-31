@@ -100,6 +100,46 @@ class DeterministicEvalCallback(BaseCallback):
         return True
 
 
+class CurriculumCallback(BaseCallback):
+    """Advance domain-randomization curriculum frac during training.
+
+    Pushes frac = min(1, t / anneal_steps) into every sub-env each rollout
+    (via env_method), so the WindWrapper / IntermittentDetectionWrapper
+    interpolate their DR bands from easy → full-hard over the first
+    `anneal_steps` timesteps, then hold full-hard for the remainder. This
+    lets the final checkpoints train on the true target distribution while
+    avoiding the early destabilization of full DR from step 0.
+
+    Intervention B of the HardNet robustness study.
+    """
+
+    def __init__(self, anneal_steps: int, verbose: int = 0):
+        super().__init__(verbose)
+        self.anneal_steps = int(anneal_steps)
+        self._last_logged_frac = -1.0
+
+    def _enable_curriculum_on_envs(self) -> None:
+        # Best-effort: call enable_curriculum on any wrapper that has it.
+        for method in ('enable_curriculum',):
+            try:
+                self.training_env.env_method(method)
+            except Exception:
+                pass
+
+    def _on_training_start(self) -> None:
+        self._enable_curriculum_on_envs()
+        self.training_env.env_method('set_curriculum_frac', 0.0)
+
+    def _on_step(self) -> bool:
+        frac = min(1.0, self.num_timesteps / max(1, self.anneal_steps))
+        # Update every rollout (~n_steps); cheap broadcast.
+        self.training_env.env_method('set_curriculum_frac', frac)
+        if self.verbose and abs(frac - self._last_logged_frac) >= 0.1:
+            self.logger.record('curriculum/frac', frac)
+            self._last_logged_frac = frac
+        return True
+
+
 class InterceptionMetricsCallback(BaseCallback):
     """Custom callback to log episode-level metrics to TensorBoard.
 
@@ -403,6 +443,26 @@ def main():
         '--hardnet-proj-iters', type=int, default=20,
         help='Dykstra iterations in the HardNet projection layer'
     )
+    parser.add_argument(
+        '--max-log-std', type=float, default=None,
+        help='Intervention C: hard cap on policy log_std (e.g. 0.0 → std≤1). '
+             'Prevents the std runaway seen in baseline HardNet training.'
+    )
+    parser.add_argument(
+        '--ent-coef', type=float, default=None,
+        help='Override entropy coefficient (config default 0.01). '
+             'Intervention C uses 0.001.'
+    )
+    parser.add_argument(
+        '--curriculum', action='store_true', default=False,
+        help='Intervention B: anneal DR band easy→full-hard over '
+             '--curriculum-steps timesteps.'
+    )
+    parser.add_argument(
+        '--curriculum-steps', type=int, default=2_000_000,
+        help='Timesteps over which the DR curriculum anneals to full-hard '
+             '(then holds). Default 2M of a 3M run.'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -503,6 +563,11 @@ def main():
         learning_rate = base_lr
         lr_desc = f'{base_lr} (constant)'
 
+    # Entropy coefficient (config default, overridable by --ent-coef for
+    # Intervention C).
+    ent_coef = (args.ent_coef if args.ent_coef is not None
+                else train_cfg['ent_coef'])
+
     # --- Create or load model ---
     if use_hardnet:
         # HardNet uses a custom policy and a 36-D augmented observation, so a
@@ -515,6 +580,7 @@ def main():
             n_base=16,
             n_constraints=4,
             proj_iters=args.hardnet_proj_iters,
+            max_log_std=args.max_log_std,
         )
         model = PPO(
             policy=HardNetActorCriticPolicy,
@@ -526,7 +592,7 @@ def main():
             gamma=train_cfg['gamma'],
             gae_lambda=train_cfg['gae_lambda'],
             clip_range=train_cfg['clip_range'],
-            ent_coef=train_cfg['ent_coef'],
+            ent_coef=ent_coef,
             policy_kwargs=policy_kwargs,
             seed=args.seed,
             verbose=1,
@@ -575,7 +641,7 @@ def main():
             gamma=train_cfg['gamma'],
             gae_lambda=train_cfg['gae_lambda'],
             clip_range=train_cfg['clip_range'],
-            ent_coef=train_cfg['ent_coef'],
+            ent_coef=ent_coef,
             seed=args.seed,
             verbose=1,
             tensorboard_log=log_dir,
@@ -598,7 +664,11 @@ def main():
         n_eval_episodes=train_cfg.get('eval_n_episodes', 20),
         verbose=1,
     )
-    callback = CallbackList([metrics_callback, checkpoint_callback, det_eval_callback])
+    callbacks = [metrics_callback, checkpoint_callback, det_eval_callback]
+    if args.curriculum:
+        callbacks.append(CurriculumCallback(
+            anneal_steps=args.curriculum_steps, verbose=1))
+    callback = CallbackList(callbacks)
 
     # --- Train ---
     print(f"\n{'='*60}")

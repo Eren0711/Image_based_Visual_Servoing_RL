@@ -1,0 +1,55 @@
+### cb seed=42 step=1000000 cond=nominal ###
+  Success      :  88.5%  (177/200)
+  max|roll|    : 0.631  exceed: 15 (0.04% of steps)
+### cb seed=42 step=1000000 cond=worst ###
+  Success      :  24.5%  (49/200)
+  max|roll|    : 0.647  exceed: 46 (0.17% of steps)
+### cb seed=42 step=1200000 cond=nominal ###
+  Success      :  85.5%  (171/200)
+  max|roll|    : 0.629  exceed: 15 (0.05% of steps)
+### cb seed=42 step=1200000 cond=worst ###
+  Success      :  22.5%  (45/200)
+  max|roll|    : 0.636  exceed: 36 (0.13% of steps)
+### cb seed=42 step=1400000 cond=nominal ###
+  Success      :  86.5%  (173/200)
+  max|roll|    : 0.630  exceed: 21 (0.06% of steps)
+### cb seed=42 step=1400000 cond=worst ###
+  Success      :  23.5%  (47/200)
+  max|roll|    : 0.646  exceed: 26 (0.10% of steps)
+### cb seed=123 step=1000000 cond=nominal ###
+  Success      :  86.5%  (173/200)
+  max|roll|    : 0.629  exceed: 13 (0.04% of steps)
+### cb seed=123 step=1000000 cond=worst ###
+  Success      :  18.5%  (37/200)
+  max|roll|    : 0.622  exceed: 9 (0.04% of steps)
+### cb seed=123 step=1200000 cond=nominal ###
+  Success      :  86.5%  (173/200)
+  max|roll|    : 0.630  exceed: 28 (0.08% of steps)
+### cb seed=123 step=1200000 cond=worst ###
+  Success      :  20.0%  (40/200)
+  max|roll|    : 0.628  exceed: 14 (0.06% of steps)
+### cb seed=123 step=1400000 cond=nominal ###
+  Success      :  81.0%  (162/200)
+  max|roll|    : 0.623  exceed: 11 (0.03% of steps)
+### cb seed=123 step=1400000 cond=worst ###
+  Success      :  20.5%  (41/200)
+  max|roll|    : 0.625  exceed: 9 (0.04% of steps)
+### cb seed=7 step=1000000 cond=nominal ###
+  Success      :  88.0%  (176/200)
+  max|roll|    : 0.648  exceed: 27 (0.08% of steps)
+### cb seed=7 step=1000000 cond=worst ###
+  Success      :  22.5%  (45/200)
+  max|roll|    : 0.639  exceed: 29 (0.11% of steps)
+### cb seed=7 step=1200000 cond=nominal ###
+  Success      :  81.0%  (162/200)
+  max|roll|    : 0.642  exceed: 20 (0.06% of steps)
+### cb seed=7 step=1200000 cond=worst ###
+  Success      :  17.0%  (34/200)
+  max|roll|    : 0.637  exceed: 23 (0.09% of steps)
+### cb seed=7 step=1400000 cond=nominal ###
+  Success      :  83.5%  (167/200)
+  max|roll|    : 0.632  exceed: 26 (0.07% of steps)
+### cb seed=7 step=1400000 cond=worst ###
+  Success      :  21.5%  (43/200)
+  max|roll|    : 0.635  exceed: 16 (0.06% of steps)
+=== C+B EVAL MATRIX DONE Sun May 31 10:31:01 +03 2026 ===

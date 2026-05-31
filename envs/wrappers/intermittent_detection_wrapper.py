@@ -117,6 +117,27 @@ class IntermittentDetectionWrapper(gym.Wrapper):
         self._n_dropped = 0
         self._n_targets_in_fov = 0  # geometric in_fov, before drop
 
+        # Curriculum DR (Intervention B). frac 0→1 interpolates the β bands
+        # from an *easy* band (high detection rate) to the configured
+        # full-hard band. Easy β₁ high (robust at range), β₃ high (high
+        # baseline detection) → few drops; hard band allows heavy dropout.
+        self._curriculum = False
+        self._curriculum_frac = 1.0
+        self._easy_ranges = None
+
+    def enable_curriculum(self, easy_ranges: dict = None) -> None:
+        """Turn on curriculum annealing of the detection-difficulty band."""
+        self._curriculum = True
+        default_easy = {
+            'beta_1': (10.0, 14.0),   # strong distance term → robust at range
+            'beta_2': self.randomization_ranges['beta_2'],
+            'beta_3': (1.5, 2.0),     # high bias → high baseline detection
+        }
+        self._easy_ranges = {**default_easy, **(easy_ranges or {})}
+
+    def set_curriculum_frac(self, frac: float) -> None:
+        self._curriculum_frac = float(np.clip(frac, 0.0, 1.0))
+
     def __getattr__(self, name):
         """Forward attribute access to the wrapped env (compat with
         downstream wrappers that expect env.dt, env.np_random, etc.)."""
@@ -124,6 +145,15 @@ class IntermittentDetectionWrapper(gym.Wrapper):
                                               'action_space', 'spec'):
             raise AttributeError(name)
         return getattr(self.env, name)
+
+    def _current_band(self, key: str) -> tuple:
+        hard = self.randomization_ranges[key]
+        if not self._curriculum:
+            return hard
+        easy = self._easy_ranges[key]
+        f = self._curriculum_frac
+        return (easy[0] + f * (hard[0] - easy[0]),
+                easy[1] + f * (hard[1] - easy[1]))
 
     def _p_detect(self, distance: float, fov_margin: float) -> float:
         """Compute detection probability."""
@@ -137,10 +167,9 @@ class IntermittentDetectionWrapper(gym.Wrapper):
     def _maybe_randomize(self) -> None:
         if not self.randomize_per_episode:
             return
-        r = self.randomization_ranges
-        self.beta_1 = float(self._rng.uniform(*r['beta_1']))
-        self.beta_2 = float(self._rng.uniform(*r['beta_2']))
-        self.beta_3 = float(self._rng.uniform(*r['beta_3']))
+        self.beta_1 = float(self._rng.uniform(*self._current_band('beta_1')))
+        self.beta_2 = float(self._rng.uniform(*self._current_band('beta_2')))
+        self.beta_3 = float(self._rng.uniform(*self._current_band('beta_3')))
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
