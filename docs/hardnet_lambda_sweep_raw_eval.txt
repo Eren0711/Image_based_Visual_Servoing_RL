@@ -1,0 +1,163 @@
+### lam=002 seed=42 step=1000000 cond=nominal ###
+  Success      :  92.0%  (184/200)
+  max|roll|    : 0.624  exceed: 2 (0.01% of steps)
+### lam=002 seed=42 step=1000000 cond=worst ###
+  Success      :  28.5%  (57/200)
+  max|roll|    : 0.608  exceed: 0 (0.00% of steps)
+### lam=002 seed=42 step=1200000 cond=nominal ###
+  Success      :  90.5%  (181/200)
+  max|roll|    : 0.632  exceed: 2 (0.01% of steps)
+### lam=002 seed=42 step=1200000 cond=worst ###
+  Success      :  30.5%  (61/200)
+  max|roll|    : 0.624  exceed: 3 (0.01% of steps)
+### lam=002 seed=42 step=1400000 cond=nominal ###
+  Success      :  90.5%  (181/200)
+  max|roll|    : 0.612  exceed: 1 (0.00% of steps)
+### lam=002 seed=42 step=1400000 cond=worst ###
+  Success      :  31.0%  (62/200)
+  max|roll|    : 0.623  exceed: 1 (0.00% of steps)
+### lam=002 seed=123 step=1000000 cond=nominal ###
+  Success      :  88.5%  (177/200)
+  max|roll|    : 0.618  exceed: 1 (0.00% of steps)
+### lam=002 seed=123 step=1000000 cond=worst ###
+  Success      :  32.0%  (64/200)
+  max|roll|    : 0.604  exceed: 0 (0.00% of steps)
+### lam=002 seed=123 step=1200000 cond=nominal ###
+  Success      :  86.5%  (173/200)
+  max|roll|    : 0.604  exceed: 0 (0.00% of steps)
+### lam=002 seed=123 step=1200000 cond=worst ###
+  Success      :  35.5%  (71/200)
+  max|roll|    : 0.597  exceed: 0 (0.00% of steps)
+### lam=002 seed=123 step=1400000 cond=nominal ###
+  Success      :  85.0%  (170/200)
+  max|roll|    : 0.617  exceed: 1 (0.00% of steps)
+### lam=002 seed=123 step=1400000 cond=worst ###
+  Success      :  29.0%  (58/200)
+  max|roll|    : 0.605  exceed: 0 (0.00% of steps)
+### lam=002 seed=7 step=1000000 cond=nominal ###
+  Success      :  94.0%  (188/200)
+  max|roll|    : 0.601  exceed: 0 (0.00% of steps)
+### lam=002 seed=7 step=1000000 cond=worst ###
+  Success      :  37.5%  (75/200)
+  max|roll|    : 0.623  exceed: 2 (0.01% of steps)
+### lam=002 seed=7 step=1200000 cond=nominal ###
+  Success      :  90.0%  (180/200)
+  max|roll|    : 0.607  exceed: 0 (0.00% of steps)
+### lam=002 seed=7 step=1200000 cond=worst ###
+  Success      :  30.0%  (60/200)
+  max|roll|    : 0.633  exceed: 5 (0.02% of steps)
+### lam=002 seed=7 step=1400000 cond=nominal ###
+  Success      :  93.0%  (186/200)
+  max|roll|    : 0.609  exceed: 0 (0.00% of steps)
+### lam=002 seed=7 step=1400000 cond=worst ###
+  Success      :  35.5%  (71/200)
+  max|roll|    : 0.612  exceed: 1 (0.00% of steps)
+### lam=01 seed=42 step=1000000 cond=nominal ###
+  Success      :  90.0%  (180/200)
+  max|roll|    : 0.577  exceed: 0 (0.00% of steps)
+### lam=01 seed=42 step=1000000 cond=worst ###
+  Success      :  30.0%  (60/200)
+  max|roll|    : 0.607  exceed: 0 (0.00% of steps)
+### lam=01 seed=42 step=1200000 cond=nominal ###
+  Success      :  84.0%  (168/200)
+  max|roll|    : 0.606  exceed: 0 (0.00% of steps)
+### lam=01 seed=42 step=1200000 cond=worst ###
+  Success      :  31.5%  (63/200)
+  max|roll|    : 0.592  exceed: 0 (0.00% of steps)
+### lam=01 seed=42 step=1400000 cond=nominal ###
+  Success      :  85.5%  (171/200)
+  max|roll|    : 0.549  exceed: 0 (0.00% of steps)
+### lam=01 seed=42 step=1400000 cond=worst ###
+  Success      :  31.5%  (63/200)
+  max|roll|    : 0.612  exceed: 1 (0.00% of steps)
+### lam=01 seed=123 step=1000000 cond=nominal ###
+  Success      :  91.0%  (182/200)
+  max|roll|    : 0.600  exceed: 0 (0.00% of steps)
+### lam=01 seed=123 step=1000000 cond=worst ###
+  Success      :  31.5%  (63/200)
+  max|roll|    : 0.614  exceed: 1 (0.00% of steps)
+### lam=01 seed=123 step=1200000 cond=nominal ###
+  Success      :  89.5%  (179/200)
+  max|roll|    : 0.588  exceed: 0 (0.00% of steps)
+### lam=01 seed=123 step=1200000 cond=worst ###
+  Success      :  35.0%  (70/200)
+  max|roll|    : 0.605  exceed: 0 (0.00% of steps)
+### lam=01 seed=123 step=1400000 cond=nominal ###
+  Success      :  87.0%  (174/200)
+  max|roll|    : 0.571  exceed: 0 (0.00% of steps)
+### lam=01 seed=123 step=1400000 cond=worst ###
+  Success      :  32.0%  (64/200)
+  max|roll|    : 0.618  exceed: 1 (0.00% of steps)
+### lam=01 seed=7 step=1000000 cond=nominal ###
+  Success      :  91.0%  (182/200)
+  max|roll|    : 0.608  exceed: 0 (0.00% of steps)
+### lam=01 seed=7 step=1000000 cond=worst ###
+  Success      :  28.0%  (56/200)
+  max|roll|    : 0.607  exceed: 0 (0.00% of steps)
+### lam=01 seed=7 step=1200000 cond=nominal ###
+  Success      :  92.5%  (185/200)
+  max|roll|    : 0.615  exceed: 1 (0.00% of steps)
+### lam=01 seed=7 step=1200000 cond=worst ###
+  Success      :  37.0%  (74/200)
+  max|roll|    : 0.622  exceed: 1 (0.00% of steps)
+### lam=01 seed=7 step=1400000 cond=nominal ###
+  Success      :  92.5%  (185/200)
+  max|roll|    : 0.593  exceed: 0 (0.00% of steps)
+### lam=01 seed=7 step=1400000 cond=worst ###
+  Success      :  29.5%  (59/200)
+  max|roll|    : 0.606  exceed: 0 (0.00% of steps)
+### lam=02 seed=42 step=1000000 cond=nominal ###
+  Success      :  85.0%  (170/200)
+  max|roll|    : 0.614  exceed: 1 (0.00% of steps)
+### lam=02 seed=42 step=1000000 cond=worst ###
+  Success      :  33.0%  (66/200)
+  max|roll|    : 0.633  exceed: 2 (0.01% of steps)
+### lam=02 seed=42 step=1200000 cond=nominal ###
+  Success      :  79.5%  (159/200)
+  max|roll|    : 0.604  exceed: 0 (0.00% of steps)
+### lam=02 seed=42 step=1200000 cond=worst ###
+  Success      :  31.0%  (62/200)
+  max|roll|    : 0.624  exceed: 1 (0.00% of steps)
+### lam=02 seed=42 step=1400000 cond=nominal ###
+  Success      :  83.0%  (166/200)
+  max|roll|    : 0.569  exceed: 0 (0.00% of steps)
+### lam=02 seed=42 step=1400000 cond=worst ###
+  Success      :  42.5%  (85/200)
+  max|roll|    : 0.596  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1000000 cond=nominal ###
+  Success      :  89.0%  (178/200)
+  max|roll|    : 0.587  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1000000 cond=worst ###
+  Success      :  41.0%  (82/200)
+  max|roll|    : 0.589  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1200000 cond=nominal ###
+  Success      :  92.5%  (185/200)
+  max|roll|    : 0.607  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1200000 cond=worst ###
+  Success      :  36.5%  (73/200)
+  max|roll|    : 0.599  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1400000 cond=nominal ###
+  Success      :  92.5%  (185/200)
+  max|roll|    : 0.606  exceed: 0 (0.00% of steps)
+### lam=02 seed=123 step=1400000 cond=worst ###
+  Success      :  43.5%  (87/200)
+  max|roll|    : 0.600  exceed: 0 (0.00% of steps)
+### lam=02 seed=7 step=1000000 cond=nominal ###
+  Success      :  87.5%  (175/200)
+  max|roll|    : 0.579  exceed: 0 (0.00% of steps)
+### lam=02 seed=7 step=1000000 cond=worst ###
+  Success      :  37.0%  (74/200)
+  max|roll|    : 0.613  exceed: 1 (0.00% of steps)
+### lam=02 seed=7 step=1200000 cond=nominal ###
+  Success      :  83.0%  (166/200)
+  max|roll|    : 0.585  exceed: 0 (0.00% of steps)
+### lam=02 seed=7 step=1200000 cond=worst ###
+  Success      :  32.5%  (65/200)
+  max|roll|    : 0.599  exceed: 0 (0.00% of steps)
+### lam=02 seed=7 step=1400000 cond=nominal ###
+  Success      :  87.0%  (174/200)
+  max|roll|    : 0.586  exceed: 0 (0.00% of steps)
+### lam=02 seed=7 step=1400000 cond=worst ###
+  Success      :  33.5%  (67/200)
+  max|roll|    : 0.597  exceed: 0 (0.00% of steps)
+=== LAMBDA SWEEP EVAL MATRIX DONE Mon Jun  1 14:09:02 +03 2026 ===
