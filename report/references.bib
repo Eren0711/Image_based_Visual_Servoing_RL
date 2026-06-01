@@ -1,0 +1,161 @@
+% =====================================================================
+% Bibliography for the journal manuscript.
+% Foundational entries are the genuine key references for IBVS, CBF, PPO,
+% and geometric control. Entries marked [PLACEHOLDER] are stand-ins to be
+% replaced with the exact venue/page data during final submission.
+% =====================================================================
+
+% ---- IBVS / visual servoing ----
+@article{chaumette2006visual,
+  author  = {Chaumette, Fran\c{c}ois and Hutchinson, Seth},
+  title   = {Visual Servo Control. {I}. Basic Approaches},
+  journal = {IEEE Robotics \& Automation Magazine},
+  volume  = {13}, number = {4}, pages = {82--90}, year = {2006}
+}
+
+@article{yang2024interception,
+  author  = {Yang, X. and Bai, Y. and She, J. and Quan, Q.},
+  title   = {High-Speed Interception Multicopter Control by Image-Based
+             Visual Servoing},
+  journal = {arXiv preprint arXiv:2404.08296},
+  year    = {2024}
+}
+
+% ---- Control Barrier Functions ----
+@article{ames2017cbf,
+  author  = {Ames, Aaron D. and Xu, Xiangru and Grizzle, Jessy W. and
+             Tabuada, Paulo},
+  title   = {Control Barrier Function Based Quadratic Programs for Safety
+             Critical Systems},
+  journal = {IEEE Transactions on Automatic Control},
+  volume  = {62}, number = {8}, pages = {3861--3876}, year = {2017}
+}
+
+@inproceedings{ames2019cbf,
+  author    = {Ames, Aaron D. and Coogan, Samuel and Egerstedt, Magnus and
+               Notomista, Gennaro and Sreenath, Koushil and Tabuada, Paulo},
+  title     = {Control Barrier Functions: Theory and Applications},
+  booktitle = {European Control Conference (ECC)},
+  pages     = {3420--3431}, year = {2019}
+}
+
+@inproceedings{wu2016planar,
+  author    = {Wu, Guofan and Sreenath, Koushil},
+  title     = {Safety-Critical Control of a Planar Quadrotor},
+  booktitle = {American Control Conference (ACC)},
+  pages     = {2252--2258}, year = {2016}
+}
+
+@inproceedings{nguyen2016ecbf,
+  author    = {Nguyen, Quan and Sreenath, Koushil},
+  title     = {Exponential Control Barrier Functions for Enforcing High
+               Relative-Degree Safety-Critical Constraints},
+  booktitle = {American Control Conference (ACC)},
+  pages     = {322--328}, year = {2016}
+}
+
+% ---- Safe RL / differentiable safety layers ----
+@inproceedings{cheng2019endtoend,
+  author    = {Cheng, Richard and Orosz, G\'abor and Murray, Richard M. and
+               Burdick, Joel W.},
+  title     = {End-to-End Safe Reinforcement Learning through Control Barrier
+               Functions for Sensor-Based Robotic Tasks},
+  booktitle = {AAAI Conference on Artificial Intelligence},
+  year      = {2019}
+}
+
+@inproceedings{donti2021dc3,
+  author    = {Donti, Priya L. and Rolnick, David and Kolter, J. Zico},
+  title     = {{DC3}: A Learning Method for Optimization with Hard Constraints},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2021}
+}
+
+@inproceedings{amos2017optnet,
+  author    = {Amos, Brandon and Kolter, J. Zico},
+  title     = {{OptNet}: Differentiable Optimization as a Layer in Neural
+               Networks},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  pages     = {136--145}, year = {2017}
+}
+
+@article{altman1999cmdp,
+  author  = {Altman, Eitan},
+  title   = {Constrained {Markov} Decision Processes},
+  journal = {Chapman and Hall/CRC},
+  year    = {1999}
+}
+
+@inproceedings{achiam2017cpo,
+  author    = {Achiam, Joshua and Held, David and Tamar, Aviv and
+               Abbeel, Pieter},
+  title     = {Constrained Policy Optimization},
+  booktitle = {International Conference on Machine Learning (ICML)},
+  pages     = {22--31}, year = {2017}
+}
+
+% ---- RL algorithm / infrastructure ----
+@article{schulman2017ppo,
+  author  = {Schulman, John and Wolski, Filip and Dhariwal, Prafulla and
+             Radford, Alec and Klimov, Oleg},
+  title   = {Proximal Policy Optimization Algorithms},
+  journal = {arXiv preprint arXiv:1707.06347},
+  year    = {2017}
+}
+
+@article{raffin2021sb3,
+  author  = {Raffin, Antonin and Hill, Ashley and Gleave, Adam and
+             Kanervisto, Anssi and Ernestus, Maximilian and Dormann, Noah},
+  title   = {Stable-Baselines3: Reliable Reinforcement Learning
+             Implementations},
+  journal = {Journal of Machine Learning Research},
+  volume  = {22}, number = {268}, pages = {1--8}, year = {2021}
+}
+
+% ---- Geometric control / dynamics ----
+@inproceedings{lee2010geometric,
+  author    = {Lee, Taeyoung and Leok, Melvin and McClamroch, N. Harris},
+  title     = {Geometric Tracking Control of a Quadrotor {UAV} on {SE(3)}},
+  booktitle = {IEEE Conference on Decision and Control (CDC)},
+  pages     = {5420--5425}, year = {2010}
+}
+
+@book{boyd2004convex,
+  author    = {Boyd, Stephen and Vandenberghe, Lieven},
+  title     = {Convex Optimization},
+  publisher = {Cambridge University Press}, year = {2004}
+}
+
+@article{dykstra1983projection,
+  author  = {Dykstra, Richard L.},
+  title   = {An Algorithm for Restricted Least Squares Regression},
+  journal = {Journal of the American Statistical Association},
+  volume  = {78}, number = {384}, pages = {837--842}, year = {1983}
+}
+
+% ---- Sim-to-real / domain randomization ----
+@inproceedings{tobin2017domain,
+  author    = {Tobin, Josh and Fong, Rachel and Ray, Alex and Schneider, Jonas
+               and Zaremba, Wojciech and Abbeel, Pieter},
+  title     = {Domain Randomization for Transferring Deep Neural Networks from
+               Simulation to the Real World},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and
+               Systems (IROS)},
+  pages     = {23--30}, year = {2017}
+}
+
+@article{kaufmann2023champion,
+  author  = {Kaufmann, Elia and Bauersfeld, Leonard and Loquercio, Antonio and
+             M{\"u}ller, Matthias and Koltun, Vladlen and Scaramuzza, Davide},
+  title   = {Champion-Level Drone Racing using Deep Reinforcement Learning},
+  journal = {Nature},
+  volume  = {620}, pages = {982--987}, year = {2023}
+}
+
+% ---- Kalman filtering ----
+@book{simon2006optimal,
+  author    = {Simon, Dan},
+  title     = {Optimal State Estimation: {Kalman}, {H-infinity}, and Nonlinear
+               Approaches},
+  publisher = {Wiley}, year = {2006}
+}

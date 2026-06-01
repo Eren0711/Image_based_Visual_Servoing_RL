@@ -12,10 +12,10 @@ venv/
 .env
 *.pdf
 
-# --- Master report exceptions (track the compiled report + its figures) ---
-# The report PDF and PNG figures are deliverables; GIFs stay ignored (large),
+# --- Report exceptions (track compiled PDFs + figures) ---
+# Report PDFs and PNG figures are deliverables; GIFs stay ignored (large),
 # their extracted static frames (replay_frame.png) are tracked instead.
-!report/master_report.pdf
+!report/*.pdf
 !report/**/*.png
 # LaTeX build intermediates we don't want
 report/*.aux
