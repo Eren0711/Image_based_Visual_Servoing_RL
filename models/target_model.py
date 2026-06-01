@@ -30,7 +30,8 @@ class TargetDrone:
     """
 
     # Supported maneuver modes
-    MODES = ['constant_velocity', 'sinusoidal', 'circular', 'random_aggressive']
+    MODES = ['constant_velocity', 'sinusoidal', 'circular', 'random_aggressive',
+             'evasive']
 
     def __init__(self, config: dict):
         """Initialize target drone model.
@@ -57,6 +58,24 @@ class TargetDrone:
         # Random aggressive parameters
         self.random_switch_interval = config.get('random_switch_interval', 25)
 
+        # Evasive parameters (reactive, turn-rate-limited high-g evasion).
+        #   evasive_g          : peak lateral acceleration in g (default 2g).
+        #   evasive_turn_rate  : max heading-change rate (rad/s), models the
+        #                        physical turn-rate limit of a real vehicle so
+        #                        the target cannot reverse instantaneously.
+        #   evasive_jink_period: mean interval (s) between evasive direction
+        #                        flips ("jinking"), randomized per flip.
+        #   evasive_react_dist : pursuer range (m) within which evasion
+        #                        becomes reactive (turn away from LOS).
+        self.evasive_g = config.get('evasive_g', 2.0)
+        self.evasive_turn_rate = config.get('evasive_turn_rate', 2.5)
+        self.evasive_jink_period = config.get('evasive_jink_period', 1.0)
+        self.evasive_react_dist = config.get('evasive_react_dist', 25.0)
+        # Cruise speed the evader maintains while breaking (fraction of v_max).
+        # Without an explicit speed-hold the perpendicular-only turn decays the
+        # speed to near-zero, making the "evader" trivially easy to catch.
+        self.evasive_cruise_frac = config.get('evasive_cruise_frac', 0.8)
+
         # State (initialized in reset)
         self.position = np.zeros(3)
         self.velocity = np.zeros(3)
@@ -72,6 +91,8 @@ class TargetDrone:
         self._circle_center = np.zeros(3)   # Center of circular orbit
         self._circle_normal = np.array([0.0, 0.0, 1.0])  # Orbit plane normal
         self._random_accel = np.zeros(3)    # Current random acceleration
+        self._jink_sign = 1.0               # current evasive turn direction
+        self._next_jink_step = 0            # step index of next jink flip
 
     def reset(self, position: np.ndarray, velocity: np.ndarray,
               maneuver_mode: str, seed: int = None) -> None:
@@ -107,6 +128,8 @@ class TargetDrone:
             self._init_circular()
         elif maneuver_mode == 'random_aggressive':
             self._init_random_aggressive()
+        elif maneuver_mode == 'evasive':
+            self._init_evasive()
 
     def _init_sinusoidal(self) -> None:
         """Initialize sinusoidal evasion parameters.
@@ -179,17 +202,23 @@ class TargetDrone:
         magnitude = self._rng.uniform(0, self.a_max)
         self._random_accel = direction * magnitude
 
-    def step(self) -> None:
+    def step(self, pursuer_pos: np.ndarray = None) -> None:
         """Advance the target by one timestep.
 
         Computes the acceleration based on the current maneuver mode,
         then integrates velocity and position via Euler method.
+
+        Args:
+            pursuer_pos: Optional (3,) interceptor position in EFCS. Only the
+                'evasive' mode uses it (to turn away from the pursuer's
+                line-of-sight). All other modes ignore it, so existing
+                callers that invoke step() with no argument are unaffected.
         """
         self._step_count += 1
         self._time += self.dt
 
         # Compute acceleration for current mode
-        self.acceleration = self._compute_acceleration()
+        self.acceleration = self._compute_acceleration(pursuer_pos)
 
         # Euler integration: v_t ← v_t + a_t * dt
         self.velocity = self.velocity + self.acceleration * self.dt
@@ -202,8 +231,11 @@ class TargetDrone:
         # Euler integration: p_t ← p_t + v_t * dt
         self.position = self.position + self.velocity * self.dt
 
-    def _compute_acceleration(self) -> np.ndarray:
+    def _compute_acceleration(self, pursuer_pos: np.ndarray = None) -> np.ndarray:
         """Compute the target's acceleration based on the maneuver mode.
+
+        Args:
+            pursuer_pos: Optional (3,) pursuer position (evasive mode only).
 
         Returns:
             np.ndarray (3,) — acceleration in EFCS.
@@ -219,6 +251,9 @@ class TargetDrone:
 
         elif self.maneuver_mode == 'random_aggressive':
             return self._accel_random_aggressive()
+
+        elif self.maneuver_mode == 'evasive':
+            return self._accel_evasive(pursuer_pos)
 
         else:
             return np.zeros(3)
@@ -297,6 +332,103 @@ class TargetDrone:
         if self._step_count % self.random_switch_interval == 0:
             self._resample_random_acceleration()
         return self._random_accel.copy()
+
+    def _init_evasive(self) -> None:
+        """Initialize the reactive, turn-rate-limited evasive maneuver."""
+        self._jink_sign = 1.0 if self._rng.random() < 0.5 else -1.0
+        self._schedule_next_jink()
+
+    def _schedule_next_jink(self) -> None:
+        """Pick the step index of the next evasive direction flip.
+
+        Jink intervals are randomized around `evasive_jink_period` so the
+        timing is unpredictable to the pursuer (uniform in [0.5, 1.5]×period).
+        """
+        period_steps = max(1, int(self.evasive_jink_period / self.dt))
+        jitter = self._rng.uniform(0.5, 1.5)
+        self._next_jink_step = self._step_count + max(1, int(period_steps * jitter))
+
+    def _accel_evasive(self, pursuer_pos: np.ndarray = None) -> np.ndarray:
+        """Reactive, physically-constrained high-g evasion.
+
+        Design goals:
+          * High lateral g (default 2g) — genuinely aggressive.
+          * Turn-rate-limited — acceleration is applied PERPENDICULAR to the
+            current velocity (a coordinated turn), so heading changes at a
+            bounded rate rather than the velocity vector teleporting. The
+            magnitude is additionally capped so the per-step heading change
+            does not exceed `evasive_turn_rate * dt`.
+          * Reactive — when the pursuer is within `evasive_react_dist`, the
+            turn direction is chosen to rotate the velocity AWAY from the
+            line-of-sight to the pursuer (break-turn), which is what real
+            evasion does. Beyond that range (or with no pursuer info), it
+            falls back to unpredictable periodic "jinking".
+
+        This stays a point-mass kinematic model (no attitude/rotor dynamics),
+        but unlike `random_aggressive` it cannot reverse direction
+        instantaneously and it actively responds to the pursuer.
+        """
+        v = self.velocity
+        speed = np.linalg.norm(v)
+        if speed < 1e-6:
+            # Degenerate (hovering) — give a small kick to establish heading.
+            return self.evasive_g * 9.81 * np.array([1.0, 0.0, 0.0])
+        v_hat = v / speed
+
+        # Lateral (turn) direction in the horizontal plane: perpendicular to v.
+        lat = np.array([-v_hat[1], v_hat[0], 0.0])
+        lat_norm = np.linalg.norm(lat)
+        if lat_norm < 1e-6:
+            # Velocity is near-vertical; pick an arbitrary horizontal normal.
+            lat = np.array([1.0, 0.0, 0.0])
+        else:
+            lat = lat / lat_norm
+
+        # --- Decide turn direction ---
+        if pursuer_pos is not None:
+            los = pursuer_pos - self.position
+            dist = np.linalg.norm(los)
+            if dist < self.evasive_react_dist and dist > 1e-6:
+                # Break-turn: choose the lateral sign that turns velocity AWAY
+                # from the pursuer (i.e. away from the LOS direction).
+                los_hat = los / dist
+                # Sign that makes the turn increase the v–LOS angle:
+                self._jink_sign = -np.sign(np.dot(lat, los_hat)) or 1.0
+            else:
+                if self._step_count >= self._next_jink_step:
+                    self._jink_sign *= -1.0
+                    self._schedule_next_jink()
+        else:
+            if self._step_count >= self._next_jink_step:
+                self._jink_sign *= -1.0
+                self._schedule_next_jink()
+
+        # --- Peak lateral acceleration (g), then turn-rate cap ---
+        a_peak = self.evasive_g * 9.81
+        # Centripetal a = v * dpsi/dt; cap a so dpsi/dt <= evasive_turn_rate.
+        a_turn_cap = speed * self.evasive_turn_rate
+        a_mag = min(a_peak, a_turn_cap)
+        accel_turn = self._jink_sign * a_mag * lat
+
+        # --- Speed-hold (cruise) term ALONG velocity ---
+        # A pure perpendicular acceleration causes the integrated speed to
+        # decay (the velocity vector curls and is re-clipped each step), so
+        # without this the "evader" spirals to a near-stop and becomes trivial
+        # to intercept. A real evader maintains cruise speed while breaking.
+        # Drive speed toward a high cruise fraction of v_max.
+        cruise = self.evasive_cruise_frac * self.v_max
+        speed_err = cruise - speed
+        accel_cruise = np.clip(speed_err / max(self.dt, 1e-3),
+                               -a_peak, a_peak) * v_hat
+
+        accel = accel_turn + accel_cruise
+
+        # Respect the configured a_max ceiling as a final clamp (the turn term
+        # is prioritized: if clipping is needed, preserve lateral authority).
+        a_norm = np.linalg.norm(accel)
+        if a_norm > self.a_max:
+            accel = accel * (self.a_max / a_norm)
+        return accel
 
     def get_state(self) -> dict:
         """Return the full target state.

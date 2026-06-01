@@ -64,13 +64,24 @@ interceptor:
 # --- Target drone ---
 target:
   v_max: 10.0
-  a_max: 5.0
+  a_max: 5.0                       # 0.5g — the CANONICAL ceiling used by the
+                                   # trained policy's eval distribution. NOTE:
+                                   # this clamps the 'evasive' mode's high-g
+                                   # turns; raise a_max (e.g. 25) when testing
+                                   # genuine aggressive evasion (see evasive_g).
   maneuver_modes: ['constant_velocity', 'sinusoidal']
   sin_amplitude: 3.0
   sin_frequency: 1.5
   circle_radius: 15.0
   circle_omega: 0.5
   random_switch_interval: 25
+  # --- Evasive mode (reactive, turn-rate-limited high-g evasion) ---
+  # Not in the default maneuver_modes (would change the trained policy's eval
+  # distribution silently); selected explicitly by the evasion eval harness.
+  evasive_g: 2.0                   # peak lateral acceleration (g)
+  evasive_turn_rate: 2.5           # max heading-change rate (rad/s)
+  evasive_jink_period: 1.0         # mean s between evasive direction flips
+  evasive_react_dist: 25.0         # pursuer range (m) for reactive break-turn
 
 # --- Environment ---
 env:

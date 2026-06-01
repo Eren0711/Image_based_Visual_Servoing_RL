@@ -22,3 +22,26 @@ report/*.aux
 report/*.out
 report/*.log
 report/*.toc
+
+# --- Finalized-policy replay videos (track only these; logs/ otherwise ignored) ---
+# Re-include the directory chain down to the locked-stage video folders so
+# git can track the curated demonstration videos. All other logs/ content
+# (checkpoints, TB, sweep videos) stays ignored and is regenerable.
+!logs/
+logs/*
+!logs/stages/
+logs/stages/*
+!logs/stages/stage4a_hardnet_d_locked/
+!logs/stages/stage4a_hocbf_locked/
+!logs/stages/stage4b_dr_finetune/
+!logs/stages/stage3b_noisy_mild/
+logs/stages/stage4a_hardnet_d_locked/*
+logs/stages/stage4a_hocbf_locked/*
+logs/stages/stage4b_dr_finetune/*
+logs/stages/stage3b_noisy_mild/*
+!logs/stages/stage4a_hardnet_d_locked/videos/
+!logs/stages/stage4a_hocbf_locked/videos/
+!logs/stages/stage4b_dr_finetune/videos/
+!logs/stages/stage3b_noisy_mild/videos/
+!logs/stages/*/videos/replay_best.mp4
+!logs/stages/*/videos/replay_best_evasive.mp4

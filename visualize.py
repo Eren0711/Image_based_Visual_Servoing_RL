@@ -90,7 +90,7 @@ def collect_episode(model, env, deterministic=True, seed=42):
         'fov_margin': [info['fov_margin']],
         'actions': [],
         'rewards': [],
-        'yaw': [env.interceptor.yaw],
+        'yaw': [env.unwrapped.interceptor.yaw],
     }
 
     done = False
@@ -108,7 +108,7 @@ def collect_episode(model, env, deterministic=True, seed=42):
         data['fov_margin'].append(info['fov_margin'])
         data['actions'].append(action.copy())
         data['rewards'].append(reward)
-        data['yaw'].append(env.interceptor.yaw)
+        data['yaw'].append(env.unwrapped.interceptor.yaw)
 
     data['outcome'] = info['episode_outcome']
 

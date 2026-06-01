@@ -351,7 +351,9 @@ class InterceptionEnv(gym.Env):
         self.interceptor.step(scaled_action)
 
         # --- Step target ---
-        self.target.step()
+        # Pass the interceptor position so the 'evasive' maneuver mode can
+        # react (break-turn away from the pursuer LOS). Other modes ignore it.
+        self.target.step(pursuer_pos=self.interceptor.position)
 
         # --- Camera projection ---
         p_r = self.interceptor.position - self.target.position
