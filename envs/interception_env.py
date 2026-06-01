@@ -103,7 +103,25 @@ class InterceptionEnv(gym.Env):
                 f"Unknown interceptor model '{model_name}'. "
                 f"Must be 'kinematic_3a' or 'multicopter_6dof'."
             )
-        self.target = TargetDrone(tgt_cfg_full)
+        # Target model selector. Default: point-mass TargetDrone (Stages 1-4b).
+        # 'sixdof' uses a full 6-DOF target with the SAME agility limits as the
+        # interceptor (symmetric adversary, evasion curriculum) — set via
+        # config['target']['model'] = 'sixdof'.
+        target_model = tgt_cfg.get('model', 'point_mass')
+        if target_model == 'sixdof':
+            from models.target_6dof import SixDOFTarget
+            # Build the 6-DOF target from the INTERCEPTOR config block so its
+            # agility (v_max, a_max, omega_max, attitude limits, dynamics_6dof)
+            # exactly equals the interceptor's. Evasion-guidance params, if any,
+            # are merged from the target config.
+            sixdof_cfg = {**int_cfg}
+            for k in ('cruise_frac', 'turn_accel_frac', 'weave_period',
+                      'jink_period', 'react_dist'):
+                if k in tgt_cfg:
+                    sixdof_cfg[k] = tgt_cfg[k]
+            self.target = SixDOFTarget(sixdof_cfg)
+        else:
+            self.target = TargetDrone(tgt_cfg_full)
         self.camera = PinholeCamera(cam_cfg)
 
         # --- Depth estimator (Stage 2a: replaces ground-truth distance) ---
