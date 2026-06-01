@@ -148,6 +148,387 @@ $3\times10^{-4}\rightarrow0$ to mitigate the overtraining pattern observed
 throughout (best checkpoint typically precedes the final one).}
 
 % =====================================================================
+\section{Mathematical Formulations}
+\label{sec:math}
+% =====================================================================
+This section gives the complete, implementation-faithful mathematical
+specification of every model, filter, controller, and safety operator used
+in the project. The stage chapters (\S6--\S12) reference these formulations
+and report experimental validation. All equations below correspond directly
+to the committed source (\texttt{models/}, \texttt{observers/}, \texttt{safety/}).
+
+\subsection{System State and the Pinhole Measurement Model}
+\label{sec:state}
+Let the earth-fixed (NED) position of interceptor and target be
+$\mathbf p,\,\mathbf p_t\in\mathbb R^3$ with $z$ down. The relative position
+is $\mathbf p_r=\mathbf p-\mathbf p_t$ and the range $d=\lVert\mathbf p_r\rVert$.
+Let $R_b^e\in SO(3)$ be the body-to-earth rotation and $R_c^b$ the fixed
+body-to-camera rotation (a $-\pi/2$ pitch placing the optical axis along body
+$+x$). A target point in the camera frame is
+\begin{equation}
+\mathbf p^c = R_c^b\,(R_b^e)^\top\,(\mathbf p_t-\mathbf p)
+= [x_c,\,y_c,\,z_c]^\top .
+\end{equation}
+The normalized pinhole projection and field-of-view (FOV) test are
+\begin{equation}
+\bar{\mathbf p}=\Big[\tfrac{x_c}{z_c},\,\tfrac{y_c}{z_c}\Big]^\top,
+\qquad
+\text{in-FOV}\;\Leftrightarrow\;
+\Big|\arctan\tfrac{x_c}{z_c}\Big|\le\tfrac{\alpha_h}{2}\;\wedge\;
+\Big|\arctan\tfrac{y_c}{z_c}\Big|\le\tfrac{\alpha_v}{2},
+\label{eq:fov}
+\end{equation}
+with horizontal/vertical FOV $\alpha_h=70^\circ$, $\alpha_v=55^\circ$. The
+FOV margin $m_\text{FOV}=\min(1-\tfrac{|\arctan(x_c/z_c)|}{\alpha_h/2},\,
+1-\tfrac{|\arctan(y_c/z_c)|}{\alpha_v/2})\in[0,1]$ ($1$ = centered, $0$ = edge).
+
+\subsection{Interaction Matrix (Image Jacobian)}
+For a point feature at $\bar{\mathbf p}=(\bar p_x,\bar p_y)$ and depth $z_c$,
+the IBVS interaction matrix $\mathbf L_s\in\mathbb R^{2\times6}$ maps the
+camera spatial velocity $[\mathbf v_c;\bm\omega_c]$ to image-feature velocity
+$\dot{\bar{\mathbf p}}=\mathbf L_s[\mathbf v_c;\bm\omega_c]$:
+\begin{equation}
+\mathbf L_s=\begin{bmatrix}
+-\tfrac{1}{z_c} & 0 & \tfrac{\bar p_x}{z_c} & \bar p_x\bar p_y & -(1+\bar p_x^2) & \bar p_y\\[2pt]
+0 & -\tfrac{1}{z_c} & \tfrac{\bar p_y}{z_c} & 1+\bar p_y^2 & -\bar p_x\bar p_y & -\bar p_x
+\end{bmatrix}.
+\label{eq:Ls}
+\end{equation}
+The rotational sub-block (columns 4--6) is depth-independent; this property
+underlies both the depth estimator (\S\ref{sec:depth}) and the IMU-aware DKF
+prediction (\S\ref{sec:dkf}).
+
+\subsection{Target Dynamics}
+\label{sec:target}
+The target is a point mass integrated at $dt$ with one of four maneuver modes,
+$\dot{\mathbf p}_t=\mathbf v_t,\;\dot{\mathbf v}_t=\mathbf a_t$:
+\begin{itemize}[nosep]
+\item \textbf{Constant velocity:} $\mathbf a_t=\mathbf 0$.
+\item \textbf{Sinusoidal evasion:} lateral acceleration
+$\mathbf a_t=A\,\omega^2\sin(\omega t+\phi)\,\hat{\mathbf e}_\perp$ on an axis
+$\hat{\mathbf e}_\perp$ perpendicular to the initial velocity, amplitude
+$A=3\,$m, frequency $\omega=1.5\,$rad/s.
+\item \textbf{Circular:} orbit of radius $R=15\,$m at rate $\omega=0.5\,$rad/s,
+$\mathbf a_t=-\omega^2(\mathbf p_t-\mathbf c)$.
+\item \textbf{Random aggressive:} $\mathbf a_t$ resampled uniformly in
+$\lVert\mathbf a_t\rVert\le a_t^{\max}$ every $25$ steps.
+\end{itemize}
+The target is observed only through its projection \eqref{eq:fov}; no target
+state enters the policy observation directly (it appears only via $\bar{\mathbf p}$
+and, during \emph{training}, via the privileged range $d$ in the reward).
+
+\subsection{Interceptor Dynamics --- Two Models}
+\label{sec:dyn}
+\paragraph{(A) Kinematic first-order model (Stages 1--3a).}
+The action $\mathbf u=(a_x,a_y,a_z,\dot\psi)$ is a body-frame acceleration
+command plus yaw rate. Body velocity follows a first-order lag toward the
+commanded velocity $\mathbf v^\star=\mathrm{clip}(\mathbf v_b+\mathbf a\,dt,
+v_{\max})$:
+\begin{align}
+\mathbf v_b &\leftarrow \mathbf v_b+\alpha_v(\mathbf v^\star-\mathbf v_b),
+&\alpha_v&=\min(dt/\tau_v,1),\;\tau_v=0.15\,\text{s},\\
+\theta_\text{des}&=-\arctan\!\tfrac{a_x}{g},\quad
+\phi_\text{des}=\arctan\!\tfrac{a_y}{g}, &
+\theta&\leftarrow\theta+\alpha_\theta(\theta_\text{des}-\theta),\;
+\tau_\theta=0.3\,\tau_v,\\
+\dot\psi&\leftarrow\dot\psi+\alpha_\psi(\dot\psi_\text{cmd}-\dot\psi),&
+\psi&\leftarrow\psi+\dot\psi\,dt,\;\tau_\psi=0.10\,\text{s},
+\end{align}
+with attitude limits $|\theta|,|\phi|\le35^\circ$. The EFCS velocity is
+$\mathbf v=R_b^e\mathbf v_b$ and $\mathbf p\leftarrow\mathbf p+\mathbf v\,dt$.
+The defining feature is the acceleration--attitude coupling
+$\theta_\text{des}=-\arctan(a_x/g)$: aggressive forward acceleration pitches
+the nose down, tilting the camera and threatening FOV loss.
+
+\paragraph{(B) Full 6-DOF Newton--Euler model (Stages 3b--4b).}
+\label{sec:6dof}
+The state is $(\mathbf p,\mathbf v,R_b^e,\bm\omega_b,f)$ with EFCS position
+/velocity, attitude, body angular rate, and scalar thrust. With mass $m$,
+gravity $\mathbf g=[0,0,g]^\top$, and thrust acting along body $-z$:
+\begin{align}
+\dot{\mathbf p}&=\mathbf v, &
+\dot{\mathbf v}&=\mathbf g-\tfrac{f}{m}R_b^e\mathbf e_3, \label{eq:newton}\\
+\dot R_b^e&=R_b^e\,[\bm\omega_b]_\times, &
+[\bm\omega_b]_\times&=\text{skew}(\bm\omega_b),
+\end{align}
+integrated by composing $R_b^e$ with the incremental rotation
+$\exp([\bm\omega_b\,dt]_\times)$ (via a quaternion, avoiding Euler
+singularities). The motor and rate loops are first-order:
+\begin{equation}
+f\leftarrow f+\tfrac{dt}{\tau_m}(f_d-f),\qquad
+\bm\omega_b\leftarrow\bm\omega_b+\tfrac{dt}{\tau_r}(\bm\omega_d-\bm\omega_b),
+\quad \tau_m=\tau_r=50\,\text{ms},
+\end{equation}
+with $\bm\omega_b$ saturated to $\omega_{\max}=4\,$rad/s and
+$f\in[0,f_{\max}]$, $f_{\max}=3mg$ (thrust-to-weight 3). The desired thrust
+$f_d$ and body rate $\bm\omega_d$ come from the SO(3) attitude controller
+(\S\ref{sec:so3}). Parameters: $m=1\,$kg, $J=\mathrm{diag}(0.01,0.01,0.02)\,$kg\,m$^2$.
+
+\subsection{Depth Estimator (Inverse-Depth Kalman Filter)}
+\label{sec:depth}
+Depth is estimated in inverse-depth coordinates $\rho=1/z_c$, which linearizes
+the translational image-velocity relation. Subtracting the (depth-independent)
+rotational contribution from the measured image velocity gives the
+translational residual $\dot{\bar{\mathbf p}}_\text{tr}=
+\dot{\bar{\mathbf p}}-\mathbf L_\text{rot}\bm\omega_c$, and with
+$\mathbf b=\mathbf B(\bar{\mathbf p})\,\mathbf v_\text{rel}^c$ (where
+$\mathbf B=[\,\mathbf I_2\;\;-\bar{\mathbf p}\,]$) the relation
+$\dot{\bar{\mathbf p}}_\text{tr}=\rho\,\mathbf b$ is \emph{linear} in $\rho$.
+A scalar Kalman filter then runs
+\begin{equation}
+\rho^-=\rho,\;\;P^-=P+Q;\quad
+K=\tfrac{P^- \mathbf b^\top}{\mathbf b P^-\mathbf b^\top+R},\;\;
+\rho\leftarrow\rho^-+K(\dot{\bar{\mathbf p}}_\text{tr}-\rho^-\mathbf b),\;\;
+P\leftarrow(1-K\mathbf b)P^-,
+\end{equation}
+with $\rho$ clamped to $[\rho_{\min},\rho_{\max}]=[0.005,2]$ (i.e.
+$z_c\in[0.5,200]\,$m) and the update gated by an observability threshold
+$\lVert\mathbf b\rVert^2>\epsilon$.
+
+\subsection{Disturbance Kalman Filter (Image-Plane State, Delay-Compensated)}
+\label{sec:dkf}
+The DKF estimates the current image-plane state
+$\mathbf x=[\bar p_x,\bar p_y,\dot{\bar p}_x,\dot{\bar p}_y]^\top$ from noisy,
+$D$-step-delayed measurements. Constant-velocity process and position-only
+measurement models:
+\begin{equation}
+\mathbf x_{k+1}=F\mathbf x_k+\mathbf w_k,\quad
+F=\begin{bmatrix}\mathbf I_2 & dt\,\mathbf I_2\\ \mathbf 0 & \mathbf I_2\end{bmatrix},
+\qquad
+\mathbf z_k=H\mathbf x_{k-D}+\mathbf n_k,\quad H=[\mathbf I_2\;\;\mathbf 0],
+\end{equation}
+$\mathbf w_k\sim\mathcal N(0,Q)$, $\mathbf n_k\sim\mathcal N(0,R)$,
+$Q=\mathrm{diag}(\sigma_p^2,\sigma_p^2,\sigma_v^2,\sigma_v^2)$ with a
+deliberately large velocity process noise $\sigma_v=0.5$ (disturbance-aware
+tracking of maneuvers without an explicit target model).
+\paragraph{Prediction (standard):}
+$\mathbf x\leftarrow F\mathbf x$, $P\leftarrow FPF^\top+Q$.
+\paragraph{Prediction (IMU-aware upgrade).} The camera ego-motion induces an
+image velocity $\dot{\bar{\mathbf p}}_\text{cam}=\mathbf L_s
+[\mathbf v_c;\bm\omega_c]$ that changes \emph{abruptly} during aggressive
+attitude changes --- precisely when the constant-velocity assumption fails.
+We therefore feed forward only the \emph{change} in the camera contribution,
+applying CV to the (slowly-varying) target residual:
+\begin{equation}
+\Delta_\text{cam}=\dot{\bar{\mathbf p}}_{\text{cam},k}-\dot{\bar{\mathbf p}}_{\text{cam},k-1},\quad
+\dot{\bar{\mathbf p}}\!\mathrel{+}=\!\Delta_\text{cam},\quad
+\bar{\mathbf p}\!\mathrel{+}=\!\tfrac12 dt\,\Delta_\text{cam}.
+\end{equation}
+\paragraph{Delay-compensated update.} The measurement $\mathbf z_k$ pertains to
+time $k\!-\!D$. Using the buffered prediction $\mathbf x_{k-D}$ and covariance
+$P_{k-D}$ for the innovation, the gain is applied to the \emph{current} state
+(a small-$D$ approximation):
+\begin{equation}
+\mathbf y=\mathbf z_k-H\mathbf x_{k-D},\;\;
+S=HP_{k-D}H^\top+R,\;\;
+K=P\,H^\top S^{-1},\;\;
+\mathbf x\leftarrow\mathbf x+K\mathbf y,
+\end{equation}
+with the Joseph-form covariance update
+$P\leftarrow(\mathbf I-KH)P(\mathbf I-KH)^\top+KRK^\top$ for numerical
+stability. The 4-D DKF is the project's \emph{perception ceiling}: it saturates
+between mild ($D{=}1,\sigma{=}.015$) and full ($D{=}3,\sigma{=}.03$) noise
+regardless of dynamics fidelity (\S\ref{sec:3a},\ref{sec:3b}).
+
+% =====================================================================
+\section{Control and Safety Framework}
+\label{sec:control}
+% =====================================================================
+\subsection{SO(3) Geometric Attitude Controller}
+\label{sec:so3}
+For the 6-DOF model, the policy's body-acceleration command $\mathbf a_b$ is
+realized by a geometric controller on $SO(3)$ (Lee et al.\ 2010). Lift the
+command to EFCS, $\mathbf a_d=R_b^e\mathbf a_b$, and form the required thrust
+force $\mathbf f_\text{req}=m(\mathbf a_d-\mathbf g)$. Its magnitude and
+direction set the desired thrust and tilt:
+\begin{equation}
+f_d=\mathrm{clip}(\lVert\mathbf f_\text{req}\rVert,0,f_{\max}),\qquad
+\hat{\mathbf n}_{f_d}=\mathbf f_\text{req}/\lVert\mathbf f_\text{req}\rVert .
+\end{equation}
+The desired rotation $R_d=R_\text{tilt}R_b^e$ is the minimal tilt aligning the
+current thrust axis $-R_b^e\mathbf e_3$ with $\hat{\mathbf n}_{f_d}$
+(Rodrigues' formula on the axis $\hat{\mathbf n}_\text{cur}\times\hat{\mathbf n}_{f_d}$).
+The attitude error and PD body-rate command are
+\begin{equation}
+\mathbf e_R=\tfrac12\big(R_d^\top R_b^e-(R_b^e)^\top R_d\big)^\vee,\qquad
+\bm\omega_d=-k_\text{att}\,\mathbf e_R,\quad k_\text{att}=6,
+\label{eq:so3}
+\end{equation}
+where $(\cdot)^\vee$ is the inverse hat (skew$\rightarrow$vector) map. The yaw
+component is overridden by the policy's direct yaw-rate command,
+$\omega_{d,z}=\dot\psi_\text{cmd}$, and $\bm\omega_d$ is saturated to
+$\omega_{\max}$. The pair $(f_d,\bm\omega_d)$ then drives the first-order motor
+and rate loops of \S\ref{sec:6dof}. This geometric controller produces
+markedly smoother attitude responses than the kinematic $\arctan(a/g)$
+coupling, which is the mechanism behind the large 3a$\rightarrow$3b gain.
+
+\subsection{Control Barrier Functions and the Safe Polytope}
+\label{sec:cbf}
+We enforce four safety constraints as zeroing CBFs $h_i(\mathbf x)\ge0$ with
+the smooth squared form (nonzero gradient at the boundary, the regularity
+condition for forward invariance):
+\begin{align}
+h_\text{hfov}&=\tan^2\!\tfrac{\alpha_h}{2}-\bar p_x^2, &
+h_\text{vfov}&=\tan^2\!\tfrac{\alpha_v}{2}-\bar p_y^2,\\
+h_\text{pitch}&=\theta_{\max,\text{eff}}^2-\theta^2, &
+h_\text{roll}&=\phi_{\max,\text{eff}}^2-\phi^2,
+\end{align}
+where $\theta_{\max,\text{eff}}=\theta_{\max}-\delta_s$ uses an inner safety
+margin $\delta_s$ (default $0.10\,$rad) absorbing the proxy--truth mismatch
+below. The safe set is the intersection
+$\mathcal C(\mathbf x)=\{\,\mathbf u: A(\mathbf x)\mathbf u\ge \mathbf b(\mathbf x),\,
+\mathbf u\in[-1,1]^4\,\}$, a polytope. The continuous-time CBF condition
+$L_f h_i+L_g h_i\,\mathbf u+\alpha_i h_i\ge0$ rearranges to the affine row
+$A_i\mathbf u\ge b_i$ with $A_i=L_g h_i$ and $b_i=-L_f h_i-\alpha_i h_i$.
+
+\paragraph{Relative degree and the proxy linearization.} In the true 6-DOF
+system the action (acceleration / yaw-rate) reaches the FOV and attitude
+outputs only through the attitude-tracking lag and Newton integration --- a
+relative degree $\ge2$, for which $L_g h_i\equiv0$ and the plain CBF-QP is
+ill-posed. We adopt a \emph{control-affine proxy}: pitch and roll track
+$\theta_\text{des}=-a_x/g$, $\phi_\text{des}=a_y/g$ through a single
+$\tau_r$ lag, rendering all four constraints relative-degree-1 with
+closed-form Lie derivatives. For the attitude barriers,
+$\dot\theta=\tfrac1{\tau_r}(-a_x/g-\theta)$ gives
+\begin{equation}
+L_f h_\text{pitch}=\tfrac{2\theta^2}{\tau_r},\qquad
+L_g h_\text{pitch}=\Big[\tfrac{2\theta}{g\tau_r},0,0,0\Big],
+\end{equation}
+and symmetrically for roll ($a_y$, with sign flip). For the FOV barriers the
+$\mathbf u$-dependence flows through $\bm\omega_c=R_c^b\bm\omega_b$ with
+$\bm\omega_b$ a function of $(a_x,a_y,\dot\psi)$; writing the per-step image
+velocity $\dot{\bar{\mathbf p}}=\mathbf L_s[\mathbf v_\text{rel}^c;\bm\omega_c]$
+and differentiating $h_\text{hfov}=\tan^2(\cdot)-\bar p_x^2$,
+\begin{equation}
+L_f h_\text{hfov}=-2\bar p_x\,\dot{\bar p}_{x,\text{drift}},\qquad
+L_g h_\text{hfov}=-2\bar p_x\,\big[\mathbf L_\text{rot}R_c^b M\big]_{0,:},
+\end{equation}
+where $M$ is the constant Jacobian $\partial\bm\omega_b/\partial\mathbf u$ of
+the proxy. FOV rows are deactivated ($A_i{=}0$) when the target is out of
+frame. Because the proxy is first-order while the truth is second-order, the
+proxy responds \emph{faster} than reality; the inner margin $\delta_s$ and a
+large class-$\mathcal K$ rate $\alpha$ absorb the mismatch, and the empirical
+attitude-limit exceedance stays $\le0.02\%$ of steps across thousands of
+episodes.
+
+\paragraph{The CBF-QP (external filter, Stage 4a.3).} Given the RL action
+$\mathbf u_\text{RL}$, the minimally-invasive safe action solves
+\begin{equation}
+\mathbf u_\text{safe}=\arg\min_{\mathbf u}\tfrac12\lVert\mathbf u-\mathbf u_\text{RL}\rVert^2
+\;\;\text{s.t.}\;\; A\mathbf u\ge\mathbf b,\;\mathbf u\in[-1,1]^4,
+\label{eq:cbfqp}
+\end{equation}
+a 4-variable, $\le12$-constraint QP solved with \texttt{quadprog} in
+$\sim0.15\,$ms. With a bisection fallback if \eqref{eq:cbfqp} is infeasible
+(deep corners of the action box).
+
+\subsection{HardNet: Differentiable In-Policy Projection}
+\label{sec:hardnetmath}
+HardNet replaces the external filter by embedding the projection onto
+$\mathcal C(\mathbf x)$ \emph{inside} the policy, so gradients propagate
+through it during PPO. The network emits $\mathbf u_\text{raw}$ and the policy
+mean is the Euclidean projection
+\begin{equation}
+\mathbf u_\text{safe}=\Pi_{\mathcal C(\mathbf x)}(\mathbf u_\text{raw})
+=\arg\min_{\mathbf u\in\mathcal C(\mathbf x)}\tfrac12\lVert\mathbf u-\mathbf u_\text{raw}\rVert^2 .
+\end{equation}
+Since $\mathcal C$ is an intersection of half-spaces and the box, we compute
+$\Pi$ by \textbf{Dykstra's alternating projection}, which (unlike plain POCS)
+converges to the true Euclidean projection. With correction terms
+$\mathbf p^{(i)},\mathbf q$ initialized to zero, each sweep projects onto every
+active half-space $\{\mathbf u:A_i\mathbf u\ge b_i\}$,
+\begin{equation}
+\mathbf y=\mathbf u+\mathbf p^{(i)},\quad
+\mathbf u'=\mathbf y+\frac{\max(0,\,b_i-A_i\mathbf y)}{\lVert A_i\rVert^2}A_i^\top,\quad
+\mathbf p^{(i)}\leftarrow\mathbf y-\mathbf u',\quad\mathbf u\leftarrow\mathbf u',
+\end{equation}
+followed by a box projection $\mathbf u\leftarrow\mathrm{clip}(\mathbf u+\mathbf q,-1,1)$,
+$\mathbf q\leftarrow(\mathbf u+\mathbf q)-\mathbf u$, for $K{=}20$ sweeps. Each
+elementary projection is piecewise-linear and differentiable, so
+$\partial\mathbf u_\text{safe}/\partial\mathbf u_\text{raw}$ is the product of
+the active-face projectors: it equals $\mathbf I$ on the interior (gradient
+passes cleanly) and drops rank along active constraint normals (the gradient
+pathology motivating Intervention~D, \S\ref{sec:hardnet}). The per-step
+coefficients $(A,\mathbf b)$ are appended to the observation
+($16\!\rightarrow\!36$-D) by a context wrapper; a slicing feature-extractor
+keeps the network conditioned on only the 16-D base observation so weights
+remain interchangeable with the unconstrained MLP policy (enabling warm-start).
+Crucially, the executed and reward-relevant action is always
+$\mathbf u_\text{safe}$, so the projection can neither produce unsafe behavior
+nor (by itself) degrade task performance --- it reshapes only the internal
+pre-image.
+
+\paragraph{Intervention D --- auxiliary feasibility loss.} To keep the
+projection Jacobian full-rank (healthy gradients) the PPO objective is
+augmented with
+\begin{equation}
+\mathcal L=\mathcal L_\text{PPO}
++\lambda\,\mathbb E\big[\lVert\mathbf u_\text{raw}-\mathbf u_\text{safe}\rVert^2\big],
+\end{equation}
+which pulls $\mathbf u_\text{raw}$ toward feasibility so the projection
+approaches the identity. The weight $\lambda$ trades a ``lazy policy''
+(over-conservative at large $\lambda$) against gradient health; the ablation
+(\S\ref{sec:hardnet}) locates the Pareto frontier.
+
+\subsection{Reward Function (Canonical Form)}
+\label{sec:reward}
+All stages share the reward template below; stage-specific weights and gating
+are noted in each chapter. With $\bar{\mathbf p}$ the image error, $d$ the
+\emph{privileged} range (training-only ``teacher'' signal, never in the
+observation), and $\mathbf a$ the normalized action:
+\begin{align}
+r &= \underbrace{w_\text{img}\,e^{-k_1\lVert\bar{\mathbf p}\rVert^2}\max\!\big(0,1-\tfrac{d}{d_\text{cut}}\big)\mathbb 1_\text{FOV}}_{\text{distance-gated centering}}
+\;+\;\underbrace{w_\text{app}(d_{k-1}-d_k)}_{\text{approach}}
+\;+\;\underbrace{w_\text{dist}\tfrac{d}{d_\text{norm}}}_{\text{anti-loiter}}\notag\\
+&\quad+\,\underbrace{w_\text{brake}\lVert\mathbf v_b\rVert\tfrac{(d_b-d)^+}{d_b}}_{\text{terminal braking}}
+\;+\;\underbrace{w_\text{fov}\,\mathbb 1_{\neg\text{FOV}}}_{\text{FOV loss}}
+\;+\;\underbrace{w_\text{bnd}(1-m_\text{FOV})^2\mathbb 1_\text{FOV}}_{\text{boundary}}\notag\\
+&\quad+\,w_\text{eff}\lVert\mathbf a\rVert^2
++ w_\text{jerk}\lVert\mathbf a-\mathbf a_{k-1}\rVert^2
++ w_\text{att}\big(\tilde\theta^2+\tilde\phi^2\big)
++ w_\text{time}
++ w_\text{int}\mathbb 1_\text{success},
+\label{eq:reward}
+\end{align}
+with $\tilde\theta=\theta/\theta_{\max}$, $\tilde\phi=\phi/\phi_{\max}$,
+success when $d<d_\text{succ}=2\,$m, and FOV-loss termination after
+$15$ consecutive out-of-frame steps. The canonical (Stage 3+) weights are
+$w_\text{img}{=}0.4$, $w_\text{app}{=}2.0$, $w_\text{dist}{=}-0.15$,
+$w_\text{brake}{=}-0.05$ ($d_b{=}5\,$m), $w_\text{fov}{=}-3.0$,
+$w_\text{bnd}{=}-0.5$, $w_\text{eff}{=}-0.05$, $w_\text{jerk}{=}-0.05$,
+$w_\text{att}{=}-0.1$, $w_\text{time}{=}-0.05$, $w_\text{int}{=}200$,
+$k_1{=}5$, $d_\text{cut}{=}25\,$m, $d_\text{norm}{=}50\,$m. The
+\emph{distance-gating} of the centering term ($\max(0,1-d/d_\text{cut})$) and
+the anti-loiter penalty are the decisive fixes for the Stage 3a reward-hacking
+failure (\S\ref{sec:3a}).
+
+\subsection{Causal Chain (Per-Step Closed Loop)}
+\label{sec:causal}
+Each $20\,$ms control step executes the following chain, which the stage
+chapters specialize:
+\begin{enumerate}[nosep]
+\item \textbf{Sense:} camera projects the target \eqref{eq:fov}; (Stage 2b+)
+measurement is noised and delayed by $D$ steps; the intermittent detector
+(Stage 4b) may drop it.
+\item \textbf{Estimate:} the DKF \eqref{sec:dkf} fuses the delayed measurement
+with IMU-aware prediction to estimate the current image state; the inverse-depth
+filter estimates $z_c$.
+\item \textbf{Observe:} the 16-D observation (image error/velocity, in-FOV flag,
+depth estimate, body velocity, Euler angles, previous action) is assembled;
+(HardNet) the CBF coefficients $(A,\mathbf b)$ are appended ($\rightarrow$36-D).
+\item \textbf{Decide:} PPO policy maps observation to $\mathbf u_\text{raw}$.
+\item \textbf{Project (safety):} external CBF-QP \eqref{eq:cbfqp} or in-policy
+Dykstra projection \S\ref{sec:hardnetmath} yields $\mathbf u_\text{safe}\in\mathcal C$.
+\item \textbf{Actuate:} (kinematic) first-order velocity/attitude lags, or
+(6-DOF) SO(3) controller \eqref{eq:so3} $\rightarrow$ motor/rate loops
+$\rightarrow$ Newton--Euler integration \eqref{eq:newton}; (Stage 4b) wind drag
+$\mathbf a_\text{drag}=-k(\mathbf v-\mathbf v_\text{wind})$ is added.
+\item \textbf{Reward \& learn:} reward \eqref{eq:reward} is computed on the
+\emph{executed} $\mathbf u_\text{safe}$; PPO updates the policy (and, under
+Intervention D, the feasibility loss conditions the projection gradients).
+\end{enumerate}
+
+% =====================================================================
 \section{Stage 1a--1b: Pipeline Validation and Action Semantics}
 % =====================================================================
 \subsection{Theoretical \& Algorithmic Foundations}
@@ -159,6 +540,16 @@ $r_\text{img}=\exp(-k_1\lVert\bar{\mathbf p}\rVert^2)$, an approach term
 proportional to closure rate, and an interception bonus. Stage 1b replaces
 instantaneous velocity with \emph{acceleration} commands plus an action-rate
 (jerk) penalty, introducing temporal coherence in the control signal.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}, specialized):}
+sense (no noise/delay) $\rightarrow$ \emph{full 18-D observation incl.\
+privileged $d$, LOS, $\mathbf v_\text{rel}$} $\rightarrow$ policy
+$\mathbf u$ $\rightarrow$ (1a) instantaneous body velocity, (1b)
+acceleration $\rightarrow$ kinematic integration. \emph{No safety layer.}
+\textbf{Reward:} \eqref{eq:reward} with no distance gating yet; dominant
+terms $w_\text{img}e^{-k_1\lVert\bar{\mathbf p}\rVert^2}$,
+$w_\text{app}(d_{k-1}-d_k)$, $w_\text{int}\mathbb 1_\text{success}$, and
+(1b) the jerk term $w_\text{jerk}\lVert\mathbf a-\mathbf a_{k-1}\rVert^2$.}
 
 \subsection{Experimental Setup \& Training Protocols}
 Stage 1a: fresh training, 10M timesteps. Stage 1b: warm-started, 1M timesteps.
@@ -208,6 +599,15 @@ both noise and delay. An IMU-aware prediction step feeds the ego-motion
 contribution $\mathbf L_s[\mathbf v_\text{cam};\bm\omega_\text{cam}]$ forward,
 sharpening the current-state estimate.
 
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense $\rightarrow$
+(2b) noise+delay $\rightarrow$ \emph{DKF estimate} (\S\ref{sec:dkf}) replaces
+the raw image state $\rightarrow$ 16-D vision-only observation
+(\S\ref{sec:state}, \S\ref{sec:depth} depth estimate; \emph{privileged $d$,
+LOS, $\mathbf v_\text{rel}$ removed}) $\rightarrow$ policy $\rightarrow$
+kinematic actuation. \emph{No safety layer.} \textbf{Reward:} \eqref{eq:reward}
+unchanged from 1b; the difficulty is purely observational (the reward still
+sees privileged $d$, but the \emph{policy} no longer does).}
+
 \subsection{Experimental Setup \& Training Protocols}
 Stage 2a: fresh, 5--10M steps. Stage 2b: warm-started from 2a, 2--3M steps,
 with the noise/delay wrapper ($D{=}1$, $\sigma{=}0.015$ mild) and DKF wrapper
@@ -243,6 +643,7 @@ noisy, delayed stream, which is what makes the noisy regime trainable.}
 
 % =====================================================================
 \section{Stage 3a: First-Order Dynamics and the Reward-Hacking Lesson}
+\label{sec:3a}
 % =====================================================================
 \subsection{Theoretical \& Algorithmic Foundations}
 Stage 3a adds first-order velocity lag ($\tau$) and attitude--camera coupling
@@ -253,6 +654,21 @@ $>$40\,m to harvest image-centering reward while avoiding the FOV-loss risk of
 committing. The fix (v2) was a distance-gated image reward
 $r_\text{img}\!\cdot\!\max(0,1-d/d_\text{cut})$ plus an increased per-step
 distance penalty, which makes loiter strictly dominated by commitment.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense+noise+delay
+$\rightarrow$ IMU-aware DKF $\rightarrow$ 16-D obs $\rightarrow$ policy
+$\rightarrow$ \emph{kinematic model (A), \S\ref{sec:dyn}}: the new
+$\theta_\text{des}=-\arctan(a_x/g)$ coupling tilts the camera with
+acceleration. \emph{No safety layer.} \textbf{Reward:} the canonical
+\eqref{eq:reward} \emph{with} the distance gate
+$\max(0,1-d/d_\text{cut})$, $d_\text{cut}=25\,$m, and $w_\text{dist}=-0.15$
+(up from $-0.02$). \textbf{Reward-hacking analysis:} under the v1 weights, a
+policy loitering at $35\,$m earned $\approx+0.24$/step image reward against
+only $\approx-0.016$/step distance penalty (net $+0.17$/step) --- loiter
+dominated commitment unless commit-success exceeded $\sim$66\%. The gate
+zeroes image reward beyond $d_\text{cut}$, making $\approx-0.12$/step the only
+steady-state option at range, so closure becomes the unique positive-return
+strategy.}
 
 \subsection{Experimental Setup \& Training Protocols}
 Stage 3a-v2: fresh, 10--15M steps, clean observation. Stage 3a-noisy: warm,
@@ -313,7 +729,17 @@ the body acceleration command is lifted to EFCS, the required thrust vector
 sets a desired rotation $R_d$, and the PD law
 $\bm\omega_d=-k\,\mathrm{vex}(R_d^\top R - R^\top R_d)$ commands the body rate,
 which is tracked through first-order motor/rate-loop lags. Quaternion
-integration avoids Euler singularities at high tilt.
+integration avoids Euler singularities at high tilt. The full controller and
+Newton--Euler dynamics are derived in \S\ref{sec:so3} and \S\ref{sec:6dof}.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense+noise+delay
+$\rightarrow$ IMU-aware DKF $\rightarrow$ 16-D obs $\rightarrow$ policy
+$\mathbf a_b$ $\rightarrow$ \emph{SO(3) controller} \eqref{eq:so3} produces
+$(f_d,\bm\omega_d)$ $\rightarrow$ first-order motor/rate loops $\rightarrow$
+Newton--Euler integration \eqref{eq:newton} with quaternion attitude.
+\emph{No safety layer yet.} \textbf{Reward:} canonical \eqref{eq:reward},
+unchanged from 3a --- the gain comes entirely from dynamics fidelity, not
+reward changes.}
 
 \subsection{Experimental Setup \& Training Protocols}
 Parameters: mass $1\,$kg, $J=\mathrm{diag}(0.01,0.01,0.02)$, $\tau_\text{motor}
@@ -384,7 +810,21 @@ A subtlety drove the engineering: the FOV/attitude constraints are
 relative-degree~2 in our action (acceleration $\rightarrow$ attitude lag
 $\rightarrow$ image), so we use a control-affine \emph{proxy} linearization
 (pitch tracks $-a_x/g$ with $\tau_\text{rate}$ lag) that renders all four
-constraints relative-degree~1, giving closed-form Lie derivatives.
+constraints relative-degree~1, giving closed-form Lie derivatives. The full
+CBF construction --- barrier functions, Lie derivatives $L_f h_i$, $L_g h_i$,
+the safe polytope $\mathcal C(\mathbf x)$, and the minimally-invasive QP
+\eqref{eq:cbfqp} --- is derived in \S\ref{sec:cbf}.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense $\rightarrow$ DKF
+$\rightarrow$ 16-D obs $\rightarrow$ policy $\mathbf u_\text{RL}$ $\rightarrow$
+\emph{external CBF-QP} \eqref{eq:cbfqp} projects to
+$\mathbf u_\text{safe}\in\mathcal C(\mathbf x)$ $\rightarrow$ SO(3) controller
+$\rightarrow$ 6-DOF dynamics. \textbf{Reward:} canonical \eqref{eq:reward};
+the safety layer is a \emph{post-hoc} action filter and does not alter the
+reward. \textbf{Safety guarantee:} forward invariance of
+$\{h_i\ge0\}$ under the relative-degree-1 proxy, with the inner margin
+$\delta_s$ absorbing the proxy--truth gap (empirically $\le0.1\%$ attitude
+exceedance).}
 
 \subsection{Experimental Setup \& Training Protocols}
 We evaluated four safety realizations:
@@ -458,7 +898,23 @@ the constraint geometry rather than being corrected post-hoc. Crucially, the
 executed and reward-relevant action is always $\mathbf u_\text{safe}$, so the
 projection cannot induce unsafe or nonsensical behavior; it only reshapes the
 network's internal pre-image. The per-step constraint coefficients $(A,b)$ are
-appended to the observation (16$\rightarrow$36-D) by a context wrapper.
+appended to the observation (16$\rightarrow$36-D) by a context wrapper. The
+Dykstra projection operator, its differentiability, and the auxiliary
+feasibility loss are formalized in \S\ref{sec:hardnetmath}.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense $\rightarrow$ DKF
+$\rightarrow$ 16-D obs $+$ CBF coefficients $(A,\mathbf b)$
+$\rightarrow$ 36-D obs $\rightarrow$ policy emits $\mathbf u_\text{raw}$
+$\rightarrow$ \emph{in-policy Dykstra projection}
+$\mathbf u_\text{safe}=\Pi_{\mathcal C(\mathbf x)}(\mathbf u_\text{raw})$
+(\S\ref{sec:hardnetmath}, gradients flow through) $\rightarrow$ SO(3)
+controller $\rightarrow$ 6-DOF dynamics. \textbf{Reward:} canonical
+\eqref{eq:reward} on the executed $\mathbf u_\text{safe}$, \emph{plus} the
+auxiliary feasibility loss $\lambda\lVert\mathbf u_\text{raw}-\mathbf u_\text{safe}\rVert^2$
+added to the PPO objective (Intervention D). \textbf{Key distinction from
+4a.3:} safety is intrinsic to the policy (a differentiable layer), not an
+external filter --- so the policy \emph{learns} the constraint geometry rather
+than being corrected after the fact.}
 
 \subsection{Experimental Setup \& Training Protocols}
 HardNet warm-starts from the Stage 4b policy (all 13 weight tensors transfer,
@@ -549,6 +1005,19 @@ Ornstein--Uhlenbeck wind process coupled through linear drag
 $\mathbf a_\text{drag}=-k(\mathbf v-\mathbf v_\text{wind})$. The DKF naturally
 rides out missed detections via prediction-only steps. Domain randomization
 (DR) over wind and detection parameters trains a single robust policy.
+
+\stagebox{\textbf{Causal chain (\S\ref{sec:causal}):} sense $\rightarrow$
+\emph{intermittent detector} (drop with prob.\ $1-p_\text{detect}$)
+$\rightarrow$ noise+delay $\rightarrow$ DKF (prediction-only on dropped frames)
+$\rightarrow$ 16-D obs $\rightarrow$ policy $\rightarrow$ CBF/HardNet safety
+$\rightarrow$ SO(3) controller $\rightarrow$ 6-DOF dynamics \emph{plus wind
+drag} $\mathbf a_\text{drag}=-k(\mathbf v-\mathbf v_\text{wind})$, with
+$\mathbf v_\text{wind}$ an Ornstein--Uhlenbeck process
+$d\mathbf v_\text{wind}=-\vartheta\,\mathbf v_\text{wind}\,dt+\varsigma\,d\mathbf W$.
+\textbf{Reward:} canonical \eqref{eq:reward}. \textbf{Training:} domain
+randomization samples $(\varsigma,\vartheta,k)$ and detector
+$(\beta_1,\beta_2,\beta_3)$ per episode from the hard band, so a single policy
+generalizes across the disturbance range.}
 
 \subsection{Experimental Setup \& Training Protocols}
 Warm-started from 3b, 5M steps, full hard DR band
