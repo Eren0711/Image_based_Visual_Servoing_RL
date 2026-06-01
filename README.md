@@ -171,10 +171,10 @@ python visualize.py --stage stage1a --episodes 10 --episode best
 python visualize.py --stage stage3a --save logs/stages/stage3a/videos/replay_best.mp4 --fps 10
 
 # Export the animation as a GIF
-python visualize.py --stage stage3a --save logs/stages/stage3a/videos/replay_best.gif --skip 3
+python visualize.py --stage stage4a_hardnet_d_seed7 --save logs/stages/stage4a_hardnet_d_seed7/videos/replay_best.gif --skip 3
 
 # Run a 100-episode evaluation and save a static aggregate performance dashboard
-python visualize.py --stage stage3a --episodes 100 --save-dashboard logs/stages/stage3a/eval/dashboard.png
+python visualize.py --stage stage4a_hardnet_d_seed7 --episodes 100 --save-dashboard logs/stages/stage4a_hardnet_d_seed7/eval/dashboard.png
 ```
 
 #### CLI Parameters:
