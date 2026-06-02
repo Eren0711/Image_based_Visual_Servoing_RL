@@ -21,6 +21,7 @@ import os
 import argparse
 import yaml
 import numpy as np
+from collections import deque
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
@@ -137,6 +138,65 @@ class CurriculumCallback(BaseCallback):
         if self.verbose and abs(frac - self._last_logged_frac) >= 0.1:
             self.logger.record('curriculum/frac', frac)
             self._last_logged_frac = frac
+        return True
+
+
+class ManeuverCurriculumCallback(BaseCallback):
+    """Cumulative target-maneuver curriculum for the 6-DOF evasion study.
+
+    Starts the target at the simplest level and APPENDS the next level to the
+    active set once the rolling training success rate over a window crosses a
+    threshold. Cumulative (earlier levels stay in the mix) so the policy does
+    not forget mastered behaviors. Level set is broadcast to all sub-envs via
+    env_method('set_target_modes', ...).
+
+    The advance is gated on BOTH a success threshold and a minimum number of
+    episodes at the current level, so a lucky early streak cannot skip levels.
+    """
+
+    def __init__(self, levels, advance_threshold=0.6, window=200,
+                 min_episodes_per_level=300, verbose=0):
+        super().__init__(verbose)
+        self.levels = list(levels)
+        self.advance_threshold = float(advance_threshold)
+        self.window = int(window)
+        self.min_episodes_per_level = int(min_episodes_per_level)
+        self._stage_idx = 0                 # highest level index unlocked
+        self._recent = deque(maxlen=self.window)
+        self._episodes_at_level = 0
+
+    def _on_training_start(self) -> None:
+        # Begin at the simplest level only.
+        self.training_env.env_method('set_target_modes', [self.levels[0]])
+        if self.verbose:
+            print(f"[curriculum] start level 0: {self.levels[0]}")
+
+    def _on_step(self) -> bool:
+        # Read terminal episodes: at done, our env writes 'episode_outcome'
+        # into the step info (and SB3 surfaces it in locals['infos']).
+        for info, done in zip(self.locals.get('infos', []),
+                              self.locals.get('dones', [])):
+            if done and 'episode_outcome' in info:
+                self._recent.append(1.0 if info['episode_outcome'] == 'success'
+                                    else 0.0)
+                self._episodes_at_level += 1
+
+        # Consider advancing
+        if (self._stage_idx < len(self.levels) - 1
+                and len(self._recent) >= self.window
+                and self._episodes_at_level >= self.min_episodes_per_level):
+            succ = float(np.mean(self._recent))
+            if succ >= self.advance_threshold:
+                self._stage_idx += 1
+                active = self.levels[:self._stage_idx + 1]
+                self.training_env.env_method('set_target_modes', active)
+                self._episodes_at_level = 0
+                self._recent.clear()
+                if self.verbose:
+                    print(f"[curriculum] success={succ:.2f} -> advance to "
+                          f"level {self._stage_idx}: {self.levels[self._stage_idx]} "
+                          f"(active set: {active})")
+        self.logger.record('curriculum/maneuver_level', self._stage_idx)
         return True
 
 
@@ -469,6 +529,16 @@ def main():
              'λ·mean‖u_raw−u_safe‖². Requires --hardnet. Uses HardNetDPPO. '
              'Keep small (~0.05) to avoid a lazy policy. None = off.'
     )
+    parser.add_argument(
+        '--maneuver-curriculum', action='store_true', default=False,
+        help='Phase 2 (Claim B): cumulative 6-DOF target-maneuver curriculum '
+             '(cruise->steady_turn->weave->break_turn->random_evasive). '
+             'Advances when rolling success crosses --curriculum-advance.'
+    )
+    parser.add_argument(
+        '--curriculum-advance', type=float, default=0.6,
+        help='Rolling success threshold to unlock the next maneuver level.'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
@@ -686,6 +756,12 @@ def main():
     if args.curriculum:
         callbacks.append(CurriculumCallback(
             anneal_steps=args.curriculum_steps, verbose=1))
+    if args.maneuver_curriculum:
+        from models.target_6dof import EVASION_LEVELS
+        callbacks.append(ManeuverCurriculumCallback(
+            levels=EVASION_LEVELS,
+            advance_threshold=args.curriculum_advance,
+            verbose=1))
     callback = CallbackList(callbacks)
 
     # --- Train ---

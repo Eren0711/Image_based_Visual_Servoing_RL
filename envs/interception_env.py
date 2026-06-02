@@ -215,6 +215,20 @@ class InterceptionEnv(gym.Env):
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
 
+    def set_target_modes(self, modes):
+        """Override the active target maneuver-mode set (curriculum control).
+
+        Used by the maneuver-curriculum callback during training to expand the
+        target's behavior set as the policy masters earlier levels. Takes
+        effect from the next episode reset (modes are sampled in reset()).
+        """
+        if isinstance(modes, (list, tuple)) and len(modes) > 0:
+            self.target_modes = list(modes)
+
+    def get_target_modes(self):
+        """Return the currently active target maneuver-mode set."""
+        return list(self.target_modes)
+
     def reset(self, seed=None, options=None):
         """Reset the environment to a new episode.
 

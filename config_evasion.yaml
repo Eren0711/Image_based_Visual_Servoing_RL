@@ -63,16 +63,20 @@ interceptor:
 
 # --- Target drone ---
 target:
+  model: 'sixdof'                  # PHASE 2 / CLAIM B: full 6-DOF target with
+                                   # the SAME agility limits as the interceptor
+                                   # (built from the interceptor config block).
   v_max: 10.0
   a_max: 25.0                      # EVASION-TRAINING override: raised from the
                                    # canonical 0.5g so the 'evasive' mode's 2g
                                    # break-turns are not clamped. constant_vel
                                    # and sinusoidal self-limit well below this.
-  maneuver_modes: ['constant_velocity', 'sinusoidal', 'evasive']
-                                   # EVASION TRAINING: 'evasive' added (~1/3 of
-                                   # episodes). The other two are kept so the
-                                   # policy does not catastrophically forget
-                                   # clean straight-line interception.
+  maneuver_modes: ['cruise']
+                                   # CLAIM B: the ManeuverCurriculumCallback
+                                   # OVERRIDES this at runtime, starting at
+                                   # 'cruise' and appending 6-DOF evasion levels
+                                   # as the policy masters each. Listed here only
+                                   # as the level-0 default.
   sin_amplitude: 3.0
   sin_frequency: 1.5
   circle_radius: 15.0
