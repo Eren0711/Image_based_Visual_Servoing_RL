@@ -1,0 +1,1009 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safe IBVS Reinforcement Learning for Multicopter Interception — Research Notebook</title>
+<script>
+  window.MathJax = {
+    tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
+    svg: { fontCache: 'global' }
+  };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<style>
+  :root{
+    --bg:#0c1116; --bg2:#0f1620; --panel:#121b26; --panel2:#16212e;
+    --line:#243443; --line2:#2d4051;
+    --ink:#e6edf3; --muted:#9bb0c3; --faint:#6f8499;
+    --cyan:#34d3e0; --cyan-d:#1aa3b0; --amber:#f2b14b; --green:#43c08a;
+    --red:#e0685f; --violet:#a98be0; --blue:#5aa9f0;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+    --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+    --max:1080px; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:16px;line-height:1.62;
+    background-image:radial-gradient(circle at 18% -10%,rgba(52,211,224,.06),transparent 40%),
+      radial-gradient(circle at 100% 0,rgba(169,139,224,.05),transparent 35%);}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1,h2,h3,h4{color:#fff;line-height:1.15;letter-spacing:-.01em}
+  code{font-family:var(--mono);background:#0a1019;border:1px solid var(--line);
+    padding:.08em .36em;border-radius:5px;font-size:.9em;color:#bfe9ee}
+  .progress{position:fixed;top:0;left:0;height:3px;width:0;z-index:60;
+    background:linear-gradient(90deg,var(--cyan),var(--amber))}
+
+  /* layout */
+  .shell{display:grid;grid-template-columns:288px minmax(0,1fr);min-height:100vh}
+  aside{position:sticky;top:0;height:100vh;overflow-y:auto;padding:20px 14px;
+    background:rgba(9,14,19,.92);border-right:1px solid var(--line);backdrop-filter:blur(8px)}
+  .brand{display:flex;gap:10px;align-items:center;margin-bottom:6px}
+  .brand .dot{width:11px;height:11px;border-radius:50%;background:var(--cyan);
+    box-shadow:0 0 14px var(--cyan)}
+  .brand strong{font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:#fff}
+  .brand-sub{color:var(--faint);font-size:12px;margin:0 0 16px 21px}
+  .navgrp{margin:14px 0 4px;color:var(--faint);font-size:11px;letter-spacing:.13em;
+    text-transform:uppercase;padding:0 8px}
+  nav a{display:block;padding:6px 10px;border-radius:6px;color:var(--muted);
+    font-size:13.5px;border:1px solid transparent}
+  nav a.sub{padding-left:24px;font-size:12.5px;color:var(--faint)}
+  nav a.active,nav a:hover{background:#13202c;color:#fff;border-color:var(--line2)}
+  main{min-width:0;overflow:clip}
+
+  /* hero */
+  .hero{position:relative;min-height:92vh;display:grid;align-items:center;
+    padding:8vh 6vw;overflow:hidden;border-bottom:1px solid var(--line)}
+  .hero video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    opacity:.22;filter:saturate(1.1)}
+  .hero::after{content:"";position:absolute;inset:0;
+    background:linear-gradient(100deg,var(--bg) 30%,rgba(12,17,22,.55) 75%,rgba(12,17,22,.3))}
+  .hero-in{position:relative;z-index:2;max-width:960px}
+  .badge{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;
+    border:1px solid var(--line2);background:#101a24;color:var(--cyan);font-size:12px;
+    letter-spacing:.08em;text-transform:uppercase;margin-bottom:20px}
+  .hero h1{font-size:clamp(34px,5.4vw,64px);margin:0 0 18px}
+  .hero p{font-size:clamp(17px,1.7vw,21px);color:var(--muted);max-width:760px;margin:0}
+  .hero-meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+  .chip{padding:7px 13px;border-radius:7px;background:#101a24;border:1px solid var(--line2);
+    color:var(--ink);font-size:13px;font-weight:600}
+  .chip b{color:var(--cyan)}
+  .hero-cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:11px 18px;border-radius:8px;
+    font-weight:700;font-size:14px;border:1px solid var(--line2);background:#13202c;color:#fff}
+  .btn.primary{background:var(--cyan);color:#06222a;border-color:var(--cyan)}
+  .btn:hover{text-decoration:none;border-color:var(--cyan)}
+
+  section{padding:64px 6vw;border-bottom:1px solid var(--line)}
+  .inner{max-width:var(--max);margin:0 auto}
+  .khead{margin-bottom:30px}
+  .kicker{color:var(--cyan);font-size:12px;font-weight:800;letter-spacing:.14em;
+    text-transform:uppercase;margin-bottom:10px}
+  h2{font-size:clamp(26px,3.4vw,40px);margin:0 0 12px}
+  .lead{color:var(--muted);font-size:18px;max-width:780px;margin:0}
+  h3{font-size:21px;margin:0 0 10px}
+  h4{font-size:15px;margin:0 0 6px;color:var(--cyan)}
+  p{margin:0 0 12px}
+
+  .grid{display:grid;gap:18px}
+  .c2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .c4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px}
+  .card.soft{background:var(--panel2)}
+  .note{background:#101a24;border:1px solid var(--line);border-left:4px solid var(--cyan);
+    border-radius:8px;padding:16px 18px}
+  .note.warn{border-left-color:var(--amber)}
+  .note.bad{border-left-color:var(--red)}
+  .note.good{border-left-color:var(--green)}
+  .note b,.note strong{color:#fff}
+
+  /* metrics */
+  .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+  .metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+  .metric b{display:block;font-size:clamp(22px,3.2vw,34px);color:#fff;line-height:1}
+  .metric b .u{font-size:.5em;color:var(--muted)}
+  .metric span{color:var(--muted);font-size:12.5px;display:block;margin-top:7px}
+
+  /* concept cards */
+  .concept{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px;
+    position:relative;overflow:hidden}
+  .concept::before{content:"";position:absolute;top:0;left:0;width:100%;height:3px;
+    background:linear-gradient(90deg,var(--cyan),transparent)}
+  .concept .tagk{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint)}
+
+  /* pipeline */
+  .pipe{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch}
+  .pnode{flex:1;min-width:118px;background:#101a24;border:1px solid var(--line2);border-radius:9px;
+    padding:13px 11px;text-align:center;position:relative;cursor:default;transition:.15s}
+  .pnode:hover{border-color:var(--cyan);background:#13212e;transform:translateY(-2px)}
+  .pnode .pt{font-weight:800;font-size:13px;color:#fff}
+  .pnode .pd{font-size:11.5px;color:var(--faint);margin-top:3px}
+  .pnode .pa{position:absolute;right:-7px;top:50%;color:var(--cyan-d);font-size:14px;transform:translateY(-50%)}
+  .pnode.safe{border-color:#2a5a66}
+  .pnode.policy{border-color:#3a4f8a}
+
+  /* timeline */
+  .tl{position:relative;margin-left:8px;padding-left:26px;
+    border-left:2px solid var(--line2)}
+  .tl-item{position:relative;padding:0 0 26px 6px}
+  .tl-item::before{content:"";position:absolute;left:-34px;top:4px;width:14px;height:14px;
+    border-radius:50%;background:var(--bg);border:3px solid var(--cyan)}
+  .tl-item.fail::before{border-color:var(--red)}
+  .tl-item.win::before{border-color:var(--green)}
+  .tl-item.safe::before{border-color:var(--violet)}
+  .tl-commit{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .tl-item h4{color:#fff;font-size:15px;margin:3px 0 4px}
+  .tl-item p{font-size:13.5px;color:var(--muted);margin:0}
+
+  /* stage tree */
+  details.stage{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    margin-bottom:16px;overflow:hidden}
+  details.stage>summary{list-style:none;cursor:pointer;padding:18px 20px;display:flex;
+    gap:16px;align-items:center;background:var(--panel2)}
+  details.stage>summary::-webkit-details-marker{display:none}
+  .sid{flex:none;min-width:62px;height:38px;display:grid;place-items:center;border-radius:8px;
+    background:#0a2a30;color:var(--cyan);font-weight:900;border:1px solid #2a5a66;font-size:14px}
+  .sid.fail{background:#2a1413;color:var(--red);border-color:#5a2a28}
+  .sid.win{background:#0e2a1f;color:var(--green);border-color:#27593f}
+  .sid.safe{background:#1d1630;color:var(--violet);border-color:#3d2f5e}
+  .stitle{flex:1}
+  .stitle b{display:block;color:#fff;font-size:17px}
+  .stitle span{color:var(--muted);font-size:13.5px}
+  .sresult{flex:none;text-align:right;color:var(--cyan);font-weight:800;font-size:14px}
+  .schevron{flex:none;color:var(--faint);transition:.2s}
+  details.stage[open] .schevron{transform:rotate(90deg)}
+  .sbody{padding:22px 24px 26px}
+
+  /* substep accordion */
+  details.sub{border:1px solid var(--line);border-radius:9px;margin:14px 0;background:var(--bg2)}
+  details.sub>summary{list-style:none;cursor:pointer;padding:13px 16px;display:flex;gap:12px;
+    align-items:center;font-weight:700;color:#fff;font-size:14.5px}
+  details.sub>summary::-webkit-details-marker{display:none}
+  details.sub>summary .subtag{margin-left:auto;font-size:11px;font-weight:700;color:var(--faint)}
+  details.sub .subbody{padding:6px 18px 18px}
+  .substep-id{font-family:var(--mono);font-size:12px;color:var(--cyan);background:#0a1019;
+    border:1px solid var(--line);padding:2px 7px;border-radius:5px}
+
+  /* anatomy blocks (problem/change/math/etc) */
+  .anatomy{display:grid;gap:10px;margin:14px 0}
+  .arow{display:grid;grid-template-columns:160px minmax(0,1fr);gap:14px;
+    padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+  .arow .alabel{font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--cyan)}
+  .arow.why .alabel{color:var(--amber)}
+  .arow.lim .alabel{color:var(--red)}
+  .arow.next .alabel{color:var(--green)}
+  .arow p{margin:0;color:var(--ink);font-size:14.5px}
+
+  /* video + figure */
+  .media{background:#080d12;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .media video{width:100%;aspect-ratio:16/10;object-fit:cover;background:#000;display:block}
+  .media img{width:100%;display:block;background:#0d141c;cursor:zoom-in}
+  .mcap{padding:13px 15px}
+  .mcap b{color:#fff;font-size:14px}
+  .mcap p{color:var(--muted);font-size:13px;margin:5px 0 0}
+  .tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:11px}
+  .tag{font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;
+    background:#13202c;color:var(--muted);border:1px solid var(--line2)}
+  .tag.win{background:#0e2a1f;color:var(--green);border-color:#27593f}
+  .tag.fail{background:#2a1413;color:var(--red);border-color:#5a2a28}
+  .tag.safe{background:#1d1630;color:var(--violet);border-color:#3d2f5e}
+
+  /* tables */
+  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+  table{width:100%;border-collapse:collapse;min-width:640px;font-size:13.5px}
+  th,td{padding:11px 13px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#0d1620;color:#fff;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase}
+  tr:last-child td{border-bottom:0}
+  td b{color:#fff}
+  .ok{color:var(--green);font-weight:700}
+  .no{color:var(--red);font-weight:700}
+
+  /* equation block */
+  .eq{background:#0a1019;border:1px solid var(--line);border-radius:9px;padding:8px 16px;
+    margin:12px 0;overflow-x:auto}
+  .eqlabel{font-size:11px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase;
+    margin-bottom:2px}
+
+  /* term tooltip */
+  .term{border-bottom:1px dotted var(--cyan);cursor:help;color:#cfe9ee}
+  .term:hover{color:#fff}
+
+  /* bars */
+  .bars{display:grid;gap:9px}
+  .bar-row{display:grid;grid-template-columns:96px minmax(0,1fr) 50px;gap:10px;align-items:center;font-size:13px}
+  .bar-track{height:15px;background:#0a1019;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .bar-fill{height:100%;background:linear-gradient(90deg,var(--cyan-d),var(--cyan));border-radius:inherit}
+  .bar-fill.amber{background:linear-gradient(90deg,#9a6a1d,var(--amber))}
+  .bar-fill.red{background:linear-gradient(90deg,#7a2a26,var(--red))}
+
+  /* lightbox */
+  dialog.lb{border:0;background:transparent;max-width:94vw;width:1100px;padding:0}
+  dialog.lb::backdrop{background:rgba(4,8,11,.9)}
+  dialog.lb img{width:100%;max-height:84vh;object-fit:contain;background:#0d141c;border-radius:8px}
+  dialog.lb .x{position:absolute;top:-42px;right:0;color:#fff;background:transparent;
+    border:1px solid #fff5;border-radius:6px;padding:6px 12px;cursor:pointer}
+
+  footer{padding:40px 6vw;background:#080d12;color:var(--muted)}
+  footer .inner{display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px}
+  .small{font-size:12.5px;color:var(--faint)}
+
+  @media(max-width:1040px){
+    .shell{grid-template-columns:1fr}
+    aside{display:none}
+    .c2,.c3,.c4,.metrics{grid-template-columns:1fr}
+    .arow{grid-template-columns:1fr;gap:5px}
+    .pnode .pa{display:none}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="shell">
+  <aside>
+    <div class="brand"><span class="dot"></span><strong>IBVS · Safe RL</strong></div>
+    <p class="brand-sub">Research notebook — reconstructed from the repository's stages, logs, configs & commit history.</p>
+    <nav id="nav">
+      <div class="navgrp">Orientation</div>
+      <a href="#top">Overview</a>
+      <a href="#primer">Concept primers</a>
+      <a href="#system">System architecture</a>
+      <a href="#evolution">Evolution matrix</a>
+      <a href="#timeline">Commit timeline</a>
+      <div class="navgrp">Development stages</div>
+      <a href="#stage1">Stage 1 · Baseline</a>
+      <a href="#stage1" class="sub">1a · pipeline / 1b · accel</a>
+      <a href="#stage2">Stage 2 · Vision-only + DKF</a>
+      <a href="#stage2" class="sub">2a · vision / 2b · noise+DKF</a>
+      <a href="#stage3">Stage 3 · Dynamics</a>
+      <a href="#stage3" class="sub">3a · reward fix / 3b · 6-DOF</a>
+      <a href="#stage4a">Stage 4a · CBF + HardNet</a>
+      <a href="#stage4a" class="sub">4a.1–4a.4 safety arc</a>
+      <a href="#stage4b">Stage 4b · Realism</a>
+      <a href="#stage5">Stage 5 · 6-DOF evader</a>
+      <a href="#stage5" class="sub">Claim A / Claim B</a>
+      <div class="navgrp">Findings</div>
+      <a href="#conclusion">Conclusion & future</a>
+    </nav>
+  </aside>
+
+  <main>
+    <!-- ============ HERO ============ -->
+    <header class="hero" id="top">
+      <video autoplay muted loop playsinline preload="metadata">
+        <source src="../logs/stages/stage4b_dr_finetune/videos/replay_best.mp4" type="video/mp4">
+      </video>
+      <div class="hero-in">
+        <span class="badge">Image-Based Visual Servoing · Reinforcement Learning · Control Barrier Functions</span>
+        <h1>Safe vision-based multicopter interception, built one controlled change at a time.</h1>
+        <p>A complete engineering record of how a learned interceptor evolved from a clean
+        baseline into a noise-robust, CBF-safe, HardNet-conditioned visual-servoing system —
+        and how an equal-agility 6-DOF adversary exposed a precise capability boundary. Every
+        stage below mirrors a real commit in the repository.</p>
+        <div class="hero-meta">
+          <span class="chip"><b>9</b> commits / development stages</span>
+          <span class="chip"><b>96.5%</b> robust interception (Stage 3b)</span>
+          <span class="chip"><b>≤0.02%</b> attitude-limit exceedance under safety</span>
+          <span class="chip"><b>+9.7pp</b> worst-case from HardNet-D</span>
+        </div>
+        <div class="hero-cta">
+          <a class="btn primary" href="#primer">Start with the concepts</a>
+          <a class="btn" href="#timeline">Jump to the timeline</a>
+          <a class="btn" href="#stage5">See the final boundary</a>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============ CONCEPT PRIMERS ============ -->
+    <section id="primer">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Teach the reader first</div>
+          <h2>The five ideas this project combines</h2>
+          <p class="lead">Before the development history, here is the vocabulary. Each card is a
+          self-contained primer so a reader from any background can follow the rest of the page.</p>
+        </div>
+
+        <div class="grid c2">
+          <div class="concept">
+            <div class="tagk">Task</div>
+            <h3>Image-Based Visual Servoing (IBVS)</h3>
+            <p>Classical visual servoing closes a control loop directly on <em>image-plane
+            features</em> rather than on a reconstructed 3-D world pose. The error signal is the
+            target's pixel offset from the image centre; the controller drives that offset to zero
+            while closing range. The map from camera motion to feature motion is the
+            <span class="term" data-tip="2×6 image Jacobian relating camera spatial velocity [v; ω] to image-feature velocity">interaction matrix</span> \(\mathbf L_s\):</p>
+            <div class="eq"><div class="eqlabel">Interaction matrix (point feature)</div>
+            \[\dot{\bar{\mathbf p}}=\mathbf L_s\,[\mathbf v_c;\,\bm\omega_c],\quad
+            \mathbf L_s=\begin{bmatrix}-\tfrac1{z_c}&0&\tfrac{\bar p_x}{z_c}&\bar p_x\bar p_y&-(1+\bar p_x^2)&\bar p_y\\[2pt]
+            0&-\tfrac1{z_c}&\tfrac{\bar p_y}{z_c}&1+\bar p_y^2&-\bar p_x\bar p_y&-\bar p_x\end{bmatrix}\]</div>
+            <p>Here \(\bar{\mathbf p}=(\bar p_x,\bar p_y)\) are normalized image coordinates and
+            \(z_c\) is target depth. We replace the classical hand-designed servo law with a learned
+            policy, but keep the image-plane error as the core feedback signal.</p>
+          </div>
+
+          <div class="concept">
+            <div class="tagk">Decision-making</div>
+            <h3>Reinforcement Learning (PPO)</h3>
+            <p>An RL agent learns a policy \(\pi_\theta(\mathbf a\mid\mathbf o)\) that maximizes
+            expected discounted return \(\mathbb E[\sum_t\gamma^t r_t]\) by trial and error in
+            simulation. We use <span class="term" data-tip="Proximal Policy Optimization — a clipped policy-gradient method, stable and sample-efficient">Proximal Policy Optimization</span>
+            (PPO), which improves the policy with a clipped surrogate objective that prevents
+            destructive update steps:</p>
+            <div class="eq"><div class="eqlabel">PPO clipped surrogate</div>
+            \[L^{\text{CLIP}}=\mathbb E_t\!\big[\min(\rho_t\hat A_t,\;\text{clip}(\rho_t,1{-}\epsilon,1{+}\epsilon)\hat A_t)\big],\quad
+            \rho_t=\tfrac{\pi_\theta(a_t|o_t)}{\pi_{\theta_{\text{old}}}(a_t|o_t)}\]</div>
+            <p>The agent never sees privileged truth at deployment — only the 16-D vision-derived
+            observation. The reward (the "teacher") may use privileged range during training only.</p>
+          </div>
+
+          <div class="concept">
+            <div class="tagk">Safety</div>
+            <h3>Control Barrier Functions (CBF)</h3>
+            <p>A CBF certifies that a safe set \(\mathcal C=\{x:h(x)\ge0\}\) is
+            <span class="term" data-tip="Once inside the safe set, the system never leaves it">forward-invariant</span>.
+            For a control-affine system, enforcing</p>
+            <div class="eq"><div class="eqlabel">CBF condition (affine in the action)</div>
+            \[\mathcal L_f h(x)+\mathcal L_g h(x)\,\mathbf u+\alpha\,h(x)\ge 0\]</div>
+            <p>keeps the system safe for all time. Because it is linear in \(\mathbf u\), it becomes
+            one row of a small quadratic program that minimally edits the policy's action. We use
+            four barriers — horizontal &amp; vertical field-of-view, pitch, and roll — each in the
+            smooth squared form \(h=(\text{limit})^2-(\cdot)^2\).</p>
+          </div>
+
+          <div class="concept">
+            <div class="tagk">Safe-RL architecture</div>
+            <h3>HardNet — in-policy differentiable projection</h3>
+            <p>Instead of filtering the action <em>after</em> the policy (an external CBF-QP),
+            HardNet embeds a <em>differentiable</em> projection onto the safe polytope as the
+            policy's output layer. Gradients flow <em>through</em> the projection during training,
+            so the network learns the constraint geometry rather than being corrected post-hoc:</p>
+            <div class="eq"><div class="eqlabel">Euclidean projection onto the safe set</div>
+            \[\mathbf u_{\text{safe}}=\Pi_{\mathcal C(x)}(\mathbf u_{\text{raw}})
+            =\arg\min_{\mathbf u\in\mathcal C(x)}\tfrac12\lVert\mathbf u-\mathbf u_{\text{raw}}\rVert^2\]</div>
+            <p>We compute \(\Pi\) with <span class="term" data-tip="Alternating projection that converges to the true Euclidean projection onto the intersection of convex sets">Dykstra's algorithm</span>.
+            The executed action is always \(\mathbf u_{\text{safe}}\), so the layer can never produce
+            an unsafe command.</p>
+          </div>
+        </div>
+
+        <div class="grid c2" style="margin-top:18px">
+          <div class="concept">
+            <div class="tagk">Plant</div>
+            <h3>The multicopter model &amp; coordinate frames</h3>
+            <p>The final interceptor is a 6-DOF rigid body in <span class="term" data-tip="North-East-Down: x-north, y-east, z-down">NED</span>
+            coordinates with state \((\mathbf p,\mathbf v,R_b^e,\bm\omega_b,f)\): position, velocity,
+            body-to-earth rotation, body rate, and thrust. Translational dynamics:</p>
+            <div class="eq"><div class="eqlabel">Newton–Euler translational law</div>
+            \[\dot{\mathbf p}=\mathbf v,\qquad \dot{\mathbf v}=\mathbf g-\tfrac{f}{m}R_b^e\mathbf e_3\]</div>
+            <p>A geometric <span class="term" data-tip="Special Orthogonal group — the space of 3D rotations">SO(3)</span>
+            controller turns the policy's body-acceleration command into a desired thrust and tilt,
+            tracked through first-order motor/rate loops (\(\tau_m=\tau_r=50\,\)ms,
+            \(m{=}1\,\)kg, thrust-to-weight 3, \(\omega_{\max}{=}4\,\)rad/s).</p>
+          </div>
+          <div class="concept">
+            <div class="tagk">Sensor</div>
+            <h3>Camera geometry &amp; the observer</h3>
+            <p>The camera is <strong>rigidly fixed, forward-looking</strong> (optical axis along
+            body \(+x\)), FOV \(70^\circ\times55^\circ\) — verified from <code>R_c_b_euler</code>.
+            There is no gimbal: keeping the target framed requires the airframe to rotate. A target
+            in camera frame projects to \(\bar{\mathbf p}=(x_c/z_c,\,y_c/z_c)\) and is "in FOV" when
+            its angular offsets stay within the half-FOV.</p>
+            <p>Because measurements are noisy and delayed, a 4-state
+            <span class="term" data-tip="Disturbance Kalman Filter — constant-velocity image-plane state estimator with delay compensation and IMU-aware prediction">Disturbance Kalman Filter</span>
+            (DKF) reconstructs the current image position/velocity, and an inverse-depth filter
+            estimates \(z_c\). The 4-D image filter is the project's perception ceiling.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SYSTEM ARCHITECTURE ============ -->
+    <section id="system">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Architecture</div>
+          <h2>One closed loop; every stage changes exactly one block</h2>
+          <p class="lead">Hover any block. The discipline of the project is that each development
+          stage modifies a single element of this loop, so improvements are attributable.</p>
+        </div>
+
+        <div class="card">
+          <div class="pipe">
+            <div class="pnode"><div class="pt">Target</div><div class="pd">point-mass → 6-DOF</div><span class="pa">→</span></div>
+            <div class="pnode"><div class="pt">Camera</div><div class="pd">fixed, fwd, 70°×55°</div><span class="pa">→</span></div>
+            <div class="pnode"><div class="pt">Noise/Delay/Dropout</div><div class="pd">Stage 2b, 4b</div><span class="pa">→</span></div>
+            <div class="pnode"><div class="pt">DKF observer</div><div class="pd">IMU-aware</div><span class="pa">→</span></div>
+            <div class="pnode policy"><div class="pt">PPO policy</div><div class="pd">π(a | o)</div><span class="pa">→</span></div>
+            <div class="pnode safe"><div class="pt">CBF / HardNet</div><div class="pd">safe action</div><span class="pa">→</span></div>
+            <div class="pnode"><div class="pt">6-DOF plant</div><div class="pd">SO(3) + motors</div></div>
+          </div>
+        </div>
+
+        <div class="grid c3" style="margin-top:18px">
+          <div class="card soft"><h4>Observation — 16-D</h4>
+            <p class="small">[0:2] image error \(\bar{\mathbf p}\) · [2:4] image velocity · [4]
+            in-FOV flag · [5] depth estimate \(\hat z_c\) · [6:9] body velocity · [9:12] Euler
+            angles · [12:16] previous action. HardNet appends 20 CBF-coefficient values → 36-D.</p></div>
+          <div class="card soft"><h4>Action — 4-D</h4>
+            <p class="small">\(\mathbf u=(a_x,a_y,a_z,\dot\psi)\): body-frame acceleration + yaw
+            rate, normalized to \([-1,1]\). The safety layer may project or filter it before it
+            reaches the plant.</p></div>
+          <div class="card soft"><h4>Safety set — 4 barriers</h4>
+            <p class="small">\(h_{\text{hfov}},h_{\text{vfov}},h_{\text{pitch}},h_{\text{roll}}\ge0\).
+            Same math whether enforced by an external QP (Stage 4a.3) or the in-policy projection
+            (Stage 4a.4).</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ EVOLUTION MATRIX ============ -->
+    <section id="evolution">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">What changed, when</div>
+          <h2>Evolution matrix of every system component</h2>
+          <p class="lead">Reading top-to-bottom shows how each subsystem matured across the
+          development stages. Empty cells mean "unchanged from the column to the left."</p>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr>
+              <th>Component</th><th>Stage 1</th><th>Stage 2</th><th>Stage 3</th>
+              <th>Stage 4a</th><th>Stage 4b</th><th>Stage 5</th>
+            </tr></thead>
+            <tbody>
+              <tr><td><b>Drone dynamics</b></td><td>kinematic, instant vel (1a) → 1st-order accel lag (1b)</td><td>—</td>
+                <td>pitch/roll = arctan(a/g) coupling (3a) → <b>full 6-DOF Newton–Euler + SO(3)</b> (3b)</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr><td><b>Camera model</b></td><td>fixed fwd pinhole 70°×55°</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr><td><b>Observation</b></td><td>18-D incl. privileged dist/LOS/vel</td><td><b>16-D vision-only</b> + depth est.</td><td>—</td><td>+20 CBF coeffs → 36-D (HardNet)</td><td>—</td><td>—</td></tr>
+              <tr><td><b>Action</b></td><td>vel (1a) → accel + yaw-rate (1b)</td><td>—</td><td>—</td><td>safety-projected/filtered</td><td>—</td><td>—</td></tr>
+              <tr><td><b>Reward</b></td><td>image + approach + intercept</td><td>—</td><td><b>distance-gated</b> image + anti-loiter + brake</td><td>+ feasibility loss (4a.4-D)</td><td>—</td><td>fixed (Claim A) / same (Claim B)</td></tr>
+              <tr><td><b>Network / safety</b></td><td>MLP policy</td><td>—</td><td>—</td><td>external HOCBF-QP (4a.3) → <b>in-policy HardNet</b> (4a.4)</td><td>—</td><td>—</td></tr>
+              <tr><td><b>Observer</b></td><td>none</td><td><b>DKF</b> + inverse-depth; IMU-aware (3a)</td><td>—</td><td>—</td><td>predict-only on dropout</td><td>—</td></tr>
+              <tr><td><b>Sensor / noise</b></td><td>perfect</td><td>Gaussian + delay D</td><td>—</td><td>—</td><td><b>+ wind (OU) + intermittent detector</b></td><td>—</td></tr>
+              <tr><td><b>Domain randomization</b></td><td>maneuver mode</td><td>—</td><td>—</td><td>—</td><td>wind/detector bands (DR)</td><td>maneuver curriculum (Claim B)</td></tr>
+              <tr><td><b>Target</b></td><td>point-mass CV + sinusoid</td><td>—</td><td>—</td><td>—</td><td>—</td><td><b>6-DOF equal-agility evader</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TIMELINE ============ -->
+    <section id="timeline">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Laboratory notebook</div>
+          <h2>The real commit timeline</h2>
+          <p class="lead">Reconstructed directly from <code>git log</code>. Green = milestone win,
+          red = instructive failure, violet = safety/architecture. This is the project's true
+          chronology — not a reconstructed narrative.</p>
+        </div>
+        <div class="tl">
+          <div class="tl-item"><div class="tl-commit">9576fd0 · stage1b</div><h4>Baseline pipeline + acceleration control</h4><p>Clean IBVS loop with full-state observation closes the distance — proof the loop works.</p></div>
+          <div class="tl-item"><div class="tl-commit">2e02dc3 · stage 2b</div><h4>Vision-only + noise/delay + DKF observer</h4><p>Privileged state removed; DKF reconstructs image-plane state from corrupted measurements.</p></div>
+          <div class="tl-item fail"><div class="tl-commit">3bf2101 · stage 3a-v2</div><h4>Reward hacking discovered &amp; fixed</h4><p>Policy learned to loiter and farm centering reward; distance-gating + anti-loiter pressure repaired the objective.</p></div>
+          <div class="tl-item"><div class="tl-commit">2842662 · 3a-noisy phase 2</div><h4>IMU-aware DKF prediction</h4><p>Feed-forward of camera ego-motion (66% det); full-noise regime still collapses — a perception ceiling, not a dynamics one.</p></div>
+          <div class="tl-item win"><div class="tl-commit">8621a9c · stage 3b</div><h4>6-DOF dynamics → 96.5% robust interception</h4><p>SO(3) geometric control replaced kinematic coupling. The single largest jump in the project.</p></div>
+          <div class="tl-item safe"><div class="tl-commit">ed4ac14→4e26479 · 4a.1–4a.3</div><h4>CBF safety: bisection → co-trained → analytical HOCBF-QP</h4><p>External safety filter, ending at an analytical quadratic program; 89% success, ~0% attitude violations.</p></div>
+          <div class="tl-item safe"><div class="tl-commit">31c0cb9 · stage 4a.4</div><h4>HardNet — in-policy differentiable CBF projection</h4><p>Safety moved inside the policy graph; gradients flow through the projection.</p></div>
+          <div class="tl-item fail"><div class="tl-commit">4019f5e · intervention C+B</div><h4>Negative result: entropy/curriculum did not help</h4><p>Ruled out exploration instability — the std blow-up was a symptom, not the cause.</p></div>
+          <div class="tl-item win"><div class="tl-commit">66dd353→cabf939 · intervention D</div><h4>HardNet-D feasibility loss: +9.7pp worst-case</h4><p>Gradient conditioning fixed the projection pathology; beats the external filter at every condition. λ-ablation maps the Pareto frontier.</p></div>
+          <div class="tl-item"><div class="tl-commit">85dd228 · stage 4b</div><h4>Realism: wind + detector dropout + DR</h4><p>Graceful degradation quantified across nominal/hard/worst conditions.</p></div>
+          <div class="tl-item fail"><div class="tl-commit">b8c94a8→e2cd9c3 · stage 5</div><h4>Equal-agility 6-DOF evader → capability boundary</h4><p>Claim A (zero-shot) and Claim B (curriculum) both show FOV retention generalizes (~94%) but sustained-turn interception does not.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 1 ============ -->
+    <section id="stage1">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 1</div>
+          <h2>Baseline — prove the visual-servoing loop can intercept</h2>
+          <p class="lead">Before any realism, establish a reference: a learned policy that closes
+          the distance on a simple target with full information. If this fails, nothing downstream
+          is meaningful.</p>
+        </div>
+
+        <details class="stage" open>
+          <summary>
+            <span class="sid">1a</span>
+            <span class="stitle"><b>Pipeline validation — kinematic, full-state</b>
+              <span>Instant-velocity point-mass interceptor; 18-D privileged observation</span></span>
+            <span class="sresult">100% success</span>
+            <span class="schevron">▶</span>
+          </summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Problem</span><p>Does a Gymnasium + PPO IBVS loop actually learn to intercept at all? Establish a working reference implementation.</p></div>
+              <div class="arow"><span class="alabel">Approach</span><p>Kinematic interceptor (commanded body velocity applied instantly), point-mass target (constant-velocity / sinusoidal), pinhole camera, an 18-D observation that <em>includes</em> privileged ground-truth range, line-of-sight, and relative velocity.</p></div>
+              <div class="arow"><span class="alabel">Math / model</span><p>Interceptor: \(\mathbf p\leftarrow\mathbf p+\mathbf v\,dt\), \(\mathbf v=\) commanded. Reward emphasises image centring \(e^{-k_1\lVert\bar{\mathbf p}\rVert^2}\), closure \(w_{\text{app}}(d_{k-1}-d_k)\), and a terminal bonus.</p></div>
+              <div class="arow"><span class="alabel">Results</span><p>Converges to <b>100% success / 0% FOV-loss</b> by ~0.5M steps. Mean image error stays high (~0.67): with privileged range, the policy intercepts without precisely centring — an early hint that vision-only training is needed.</p></div>
+              <div class="arow lim"><span class="alabel">Limitation</span><p>Trivially easy: perfect state, no dynamics lag, no sensor noise. Proves the plumbing, not robustness.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>Real systems lag and don't get instantaneous velocity — Stage 1b adds acceleration control.</p></div>
+            </div>
+            <div class="media" style="max-width:560px">
+              <video controls preload="metadata" playsinline poster="">
+                <source src="../logs/stages/stage1a/videos/replay_best_stage1a_regenerated.mp4" type="video/mp4"></video>
+              <div class="mcap"><b>Stage 1a — clean kinematic interception</b>
+                <p>Full-information baseline. The reference behaviour every later stage is measured against.</p>
+                <div class="tags"><span class="tag win">pipeline validated</span><span class="tag">18-D obs</span></div></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="stage">
+          <summary>
+            <span class="sid">1b</span>
+            <span class="stitle"><b>Acceleration control + action smoothing</b>
+              <span>First-order velocity lag, jerk penalty, previous-action in observation</span></span>
+            <span class="sresult">&gt;90% success</span>
+            <span class="schevron">▶</span>
+          </summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why 1a insufficient</span><p>Instant velocity is unphysical and lets the policy command discontinuous, non-realisable motion. It also gives no temporal coherence to the control signal.</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>Action becomes <em>acceleration</em> + yaw-rate; velocity follows a first-order lag. A jerk penalty \(w_{\text{jerk}}\lVert\mathbf a_k-\mathbf a_{k-1}\rVert^2\) and the previous action are added to the observation.</p></div>
+              <div class="arow"><span class="alabel">Results</span><p>Retains &gt;90% success while producing smooth, temporally coherent commands — the action semantics the rest of the project keeps.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>It still sees privileged truth. A real interceptor only has its camera — Stage 2 removes the privileged channels.</p></div>
+            </div>
+            <div class="media" style="max-width:560px">
+              <video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage1b/videos/replay_best.mp4" type="video/mp4"></video>
+              <div class="mcap"><b>Stage 1b — acceleration-controlled interception</b>
+                <p>Smoother, physically-plausible pursuit. This is the clip to open a talk with.</p>
+                <div class="tags"><span class="tag win">smooth control</span><span class="tag">accel + yaw-rate action</span></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 2 ============ -->
+    <section id="stage2">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 2</div>
+          <h2>Vision-only perception and the Kalman observer</h2>
+          <p class="lead">Strip away privileged state, then confront the policy with noisy, delayed
+          measurements — and give it a state estimator to cope.</p>
+        </div>
+
+        <details class="stage">
+          <summary><span class="sid">2a</span>
+            <span class="stitle"><b>Remove privileged information — vision-only 16-D</b>
+              <span>No ground-truth distance / LOS / relative velocity</span></span>
+            <span class="sresult">~70% success</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why 1b insufficient</span><p>The policy leaned on privileged range it would never have on hardware. Performance was an illusion of information, not skill.</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>Observation drops to a 16-D <em>vision-only</em> vector: image error, image velocity, in-FOV flag, an <em>estimated</em> depth, body velocity, attitude, previous action. An inverse-depth Kalman filter supplies \(\hat z_c\) from the image-velocity residual.</p></div>
+              <div class="arow"><span class="alabel">Results</span><p>Success drops to ~70% — the honest cost of removing privileged state, and the new baseline to improve.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>Real cameras are noisy and laggy; Stage 2b injects that and adds the DKF.</p></div>
+            </div>
+            <div class="media" style="max-width:560px">
+              <video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage2a/videos/replay_best.mp4" type="video/mp4"></video>
+              <div class="mcap"><b>Stage 2a — vision-only pursuit</b><p>Same loop, no privileged state. Performance now reflects genuine visual skill.</p>
+              <div class="tags"><span class="tag">16-D vision obs</span></div></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="stage">
+          <summary><span class="sid">2b</span>
+            <span class="stitle"><b>Noise + delay + Disturbance Kalman Filter</b>
+              <span>Gaussian image noise, D-step delay, 4-state image-plane estimator</span></span>
+            <span class="sresult">62% (mild)</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why 2a insufficient</span><p>It assumed perfect, instantaneous detections. A pipeline-latency + sensor-noise model is needed for any realism claim.</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>Image measurements are corrupted with Gaussian noise and delayed by \(D\) steps. A DKF with a constant-velocity model and delay-compensated update reconstructs the <em>current</em> image state.</p></div>
+              <div class="arow"><span class="alabel">Math / model</span><p>State \(\mathbf x=[\bar p_x,\bar p_y,\dot{\bar p}_x,\dot{\bar p}_y]\). Predict \(\mathbf x\!\leftarrow\!F\mathbf x\); delayed update uses the buffered prediction \(\mathbf x_{k-D}\) for the innovation with a Joseph-form covariance update.</p></div>
+              <div class="arow"><span class="alabel">Results</span><p>Stabilises at 62% under mild noise. Without the DKF the delayed/noisy estimate destabilises the terminal approach — the observer is essential, not cosmetic.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>The kinematic dynamics still cap behaviour; Stage 3 confronts dynamics fidelity and a reward-design failure.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="media"><img src="../report/stage_2b/dkf_tracking.png" alt="DKF tracking" data-cap="DKF: clean truth vs noisy/delayed measurement vs filtered estimate.">
+                <div class="mcap"><b>DKF tracking diagnostic</b><p>The filter recovers the true current image position from the noisy, delayed stream — the signal the policy actually conditions on.</p></div></div>
+              <div class="media"><video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage2b/videos/replay_best.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>Stage 2b — interception under noisy vision</b><p>Observation engineering matters before vehicle realism is even fully introduced.</p>
+                <div class="tags"><span class="tag safe">DKF observer</span></div></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 3 ============ -->
+    <section id="stage3">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 3</div>
+          <h2>Dynamics fidelity — a reward failure, then the project's biggest leap</h2>
+          <p class="lead">Stage 3 contains the most instructive failure (reward hacking) and the most
+          important win (full 6-DOF dynamics taking interception from 66% to 96.5%).</p>
+        </div>
+
+        <details class="stage">
+          <summary><span class="sid fail">3a</span>
+            <span class="stitle"><b>First-order dynamics + the reward-hacking lesson</b>
+              <span>Attitude–acceleration coupling; loiter exploit discovered &amp; fixed</span></span>
+            <span class="sresult">66% (noisy-mild)</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">What changed</span><p>First-order velocity lag plus attitude coupling \(\theta_{\text{des}}=-\arctan(a_x/g)\): aggressive acceleration pitches the nose and tilts the fixed camera, threatening FOV loss.</p></div>
+              <div class="arow lim"><span class="alabel">Failure (v1)</span><p>2% success. The policy discovered a <b>reward hack</b>: back off to &gt;40 m and harvest image-centring reward while avoiding the FOV-loss risk of committing.</p></div>
+              <div class="arow why"><span class="alabel">Root cause</span><p>At range, a loiter earned ≈+0.24/step centring reward against only ≈−0.016/step distance penalty — net positive. Loiter dominated commitment unless commit-success exceeded ~66%.</p></div>
+              <div class="arow"><span class="alabel">Fix (v2)</span><p>Distance-gate the image reward, \(e^{-k_1\lVert\bar{\mathbf p}\rVert^2}\!\cdot\!\max(0,1-d/d_{\text{cut}})\) with \(d_{\text{cut}}{=}25\)m, and raise the anti-loiter penalty to \(-0.15\). Now loiter pays ≈−0.12/step and closure is the only positive-return strategy.</p></div>
+              <div class="arow"><span class="alabel">Sub-experiments</span><p>3a-noisy variants explored CV-DKF vs IMU-aware DKF and mild vs full noise. <b>IMU-aware prediction</b> reached 66% at mild noise and removed a brake-penalty hack. <b>Full noise collapsed to 0%</b> regardless — a 4-D DKF capacity ceiling, not a dynamics issue.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>Kinematic attitude coupling is crude; a true 6-DOF model with a geometric attitude controller should track far better.</p></div>
+            </div>
+            <div class="media" style="max-width:560px">
+              <video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage3a/videos/replay_best.mp4" type="video/mp4"></video>
+              <div class="mcap"><b>Stage 3a — first-order dynamics pursuit</b>
+                <p>The stage whose failure (reward hacking) produced the most important reward-design lesson in the project.</p>
+                <div class="tags"><span class="tag fail">reward-hacking lesson</span><span class="tag">distance-gated reward fix</span></div></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="stage" open>
+          <summary><span class="sid win">3b</span>
+            <span class="stitle"><b>Full 6-DOF Newton–Euler dynamics + SO(3) attitude control</b>
+              <span>The turning point of the entire project</span></span>
+            <span class="sresult">96.5% (noisy-mild)</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why 3a insufficient</span><p>\(\theta=-\arctan(a/g)\) is a static, jerky stand-in for attitude. It produces abrupt camera tilts that lose the target during aggressive terminal approach.</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>A full 6-DOF rigid body with a geometric <b>SO(3) controller</b>: the body-acceleration command sets a desired thrust + tilt; a PD law on the rotation error commands the body rate, tracked through first-order motor/rate loops; quaternion attitude integration avoids singularities.</p></div>
+              <div class="arow"><span class="alabel">Math / model</span>
+                <p>\(\dot{\mathbf v}=\mathbf g-\tfrac{f}{m}R_b^e\mathbf e_3\), and the attitude error / rate law:</p></div>
+            </div>
+            <div class="eq">\[\mathbf e_R=\tfrac12\big(R_d^\top R_b^e-(R_b^e)^\top R_d\big)^{\vee},\qquad
+              \bm\omega_d=-k_{\text{att}}\,\mathbf e_R,\quad k_{\text{att}}=6\]</div>
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Results</span><p>Clean: 96% (7M ckpt). <b>Noisy-mild + IMU-DKF: 96.5%</b> (200-ep, seed 1000) — a +30pp jump over the kinematic model at the same noise. The smoother SO(3) attitude response keeps the target centred through aggressive maneuvers. Full-noise still ~2% (the same 4-D DKF perception ceiling).</p></div>
+              <div class="arow lim"><span class="alabel">Limitation</span><p>Still a "lite" model (no aero drag, no rotor mixing). And it has no explicit safety guarantee — aggressive policies violate attitude limits on 9–39% of steps.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>A deployable interceptor needs hard safety on FOV and attitude — Stage 4a adds Control Barrier Functions.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="media"><video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage3b_noisy_mild/videos/replay_best.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>Stage 3b — 6-DOF interception, 96.5%</b><p>The headline robust-success clip. 6-DOF + SO(3) + IMU-DKF under realistic mild noise.</p>
+                <div class="tags"><span class="tag win">96.5% deterministic</span><span class="tag">SO(3) control</span></div></div></div>
+              <div class="media"><img src="../report/figures/noise_sensitivity.png" alt="noise sensitivity" data-cap="Kinematic vs 6-DOF across noise levels — 3b is the turning point.">
+                <div class="mcap"><b>Dynamics fidelity vs noise</b><p>6-DOF dominates at mild noise; both models hit the same 4-D-filter wall at full noise.</p></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 4a ============ -->
+    <section id="stage4a">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 4a · the safety contribution</div>
+          <h2>Control Barrier Functions, then HardNet — and a rigorous safe-RL discovery</h2>
+          <p class="lead">Four sub-steps build from an external safety filter to an in-policy
+          differentiable projection, and a multi-seed study isolates a real gradient pathology and
+          its fix.</p>
+        </div>
+
+        <details class="stage">
+          <summary><span class="sid safe">4a.1–4a.3</span>
+            <span class="stitle"><b>External CBF safety: bisection → co-trained → analytical HOCBF-QP</b>
+              <span>Minimally-invasive action filtering over FOV &amp; attitude</span></span>
+            <span class="sresult">89% / ~0% viol</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Goal</span><p>Guarantee the four constraints (horizontal/vertical FOV, pitch, roll) at every step while minimally editing the policy's action.</p></div>
+              <div class="arow"><span class="alabel">4a.1 bisection</span><p>Action-magnitude line search over a 6-DOF rollout horizon. Safe but over-corrective (~80% of steps); caps success near 84%.</p></div>
+              <div class="arow"><span class="alabel">4a.2 co-trained</span><p>Same filter inside the training loop (85.5%). The bisection can only <em>scale</em> the action, so the policy can't escape the throttle.</p></div>
+              <div class="arow"><span class="alabel">4a.3 HOCBF-QP</span><p>Analytical Lie derivatives via a relative-degree-1 proxy → a 4-variable quadratic program solved with <code>quadprog</code> in ~0.15 ms. Redirects minimally (55% correction rate). <b>89% success</b>, ~0% attitude violation.</p></div>
+              <div class="arow"><span class="alabel">Math / model</span></div>
+            </div>
+            <div class="eq"><div class="eqlabel">CBF-QP (minimally-invasive safety filter)</div>
+              \[\mathbf u_{\text{safe}}=\arg\min_{\mathbf u}\tfrac12\lVert\mathbf u-\mathbf u_{\text{RL}}\rVert^2
+              \;\;\text{s.t.}\;\; A\mathbf u\ge\mathbf b,\;\mathbf u\in[-1,1]^4\]</div>
+            <div class="grid c2">
+              <div class="media"><img src="../report/figures/cbf_methods.png" alt="cbf methods" data-cap="Safety-filter comparison at the nominal operating point.">
+                <div class="mcap"><b>Safety-filter method comparison</b><p>The analytical HOCBF-QP recovers most of the gap the bisection filters could not.</p></div></div>
+              <div class="media"><video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage4a_hocbf_locked/videos/replay_best.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>Stage 4a.3 — HOCBF-filtered interception</b><p>Pitch/roll held strictly within limits while the policy pursues.</p>
+                <div class="tags"><span class="tag safe">external CBF-QP</span></div></div></div>
+            </div>
+          </div>
+        </details>
+
+        <details class="stage" open>
+          <summary><span class="sid safe">4a.4</span>
+            <span class="stitle"><b>HardNet — in-policy projection + the gradient-conditioning discovery</b>
+              <span>Variance study → C+B (negative) → Plan D (positive) → λ-ablation</span></span>
+            <span class="sresult">+9.7pp worst-case</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why external filter insufficient</span><p>An external QP corrects actions <em>after</em> the policy, so the policy never internalises the safe-set geometry — and a naive in-policy projection introduces a subtle training pathology (below).</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>The Dykstra projection \(\Pi_{\mathcal C(x)}\) becomes the policy's output layer (CBF coefficients appended to the obs, 16→36-D). Gradients flow through it during PPO.</p></div>
+              <div class="arow lim"><span class="alabel">The pathology</span><p>On the interior \(\partial\mathbf u_{\text{safe}}/\partial\mathbf u_{\text{raw}}=\mathbf I\); but when a constraint is active, the projection's Jacobian <em>annihilates the gradient along that normal</em>. The policy is under-trained exactly at the safety boundary — collapsing worst-case robustness.</p></div>
+              <div class="arow"><span class="alabel">Falsification (C+B)</span><p>Capping the action std + entropy + a curriculum-DR anneal made worst-case <em>worse</em> (24.2→21.2%). This <b>ruled out exploration instability</b> as the cause — the std blow-up was a symptom.</p></div>
+              <div class="arow next"><span class="alabel">Fix — Plan D</span><p>An auxiliary <b>feasibility loss</b> pulls the raw action toward the safe set so the projection stays near identity (full-rank Jacobian, healthy gradients):</p></div>
+            </div>
+            <div class="eq"><div class="eqlabel">HardNet-D objective</div>
+              \[\mathcal L=\mathcal L_{\text{PPO}}+\lambda\,\mathbb E\big[\lVert\mathbf u_{\text{raw}}-\mathbf u_{\text{safe}}\rVert^2\big]\]</div>
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Results</span><p>Worst-case 24.2 → <b>33.9%</b> (+9.7pp), nominal unchanged (91.2%), attitude exceedance ≤0.02% — and it now <b>beats the external filter at every condition</b>. A 3-seed study confirms it's systematic, not luck.</p></div>
+              <div class="arow"><span class="alabel">λ-ablation (Pareto)</span><p>Every \(\lambda\in\{0.02,0.05,0.1,0.2\}\) beats both baselines. λ=0.05 best nominal-preserving; λ=0.2 best worst-case (36.7%) at a ~3pp nominal cost — the "lazy policy" trade-off.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="media"><img src="../report/figures/intervention_arc.png" alt="intervention arc" data-cap="Baseline → C+B (negative) → Plan D (positive, beats external filter).">
+                <div class="mcap"><b>The intervention arc</b><p>C+B hurts; Plan D recovers worst-case and surpasses the external filter at nominal parity.</p></div></div>
+              <div class="media"><video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage4a_hardnet_d_locked/videos/replay_best.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>HardNet-D safe interception</b><p>Safety is intrinsic to the policy — no online QP at inference.</p>
+                <div class="tags"><span class="tag safe">in-policy projection</span><span class="tag win">+9.7pp worst-case</span></div></div></div>
+            </div>
+            <div class="grid c2" style="margin-top:18px">
+              <div class="media"><img src="../report/figures/lambda_ablation.png" alt="lambda ablation" data-cap="λ Pareto frontier: worst-case vs nominal.">
+                <div class="mcap"><b>λ ablation — Pareto frontier</b><p>The deployment knob between nominal performance and worst-case robustness.</p></div></div>
+              <div class="media"><img src="../report/figures/hardnet_instrumentation.png" alt="hardnet instrumentation" data-cap="Raw–safe distance and projection-active fraction fall with λ.">
+                <div class="mcap"><b>Mechanism confirmation</b><p>Higher λ drives the projection toward identity (raw–safe distance 0.15→0.03), restoring gradient rank.</p></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 4b ============ -->
+    <section id="stage4b">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 4b</div>
+          <h2>Realistic perception &amp; environmental disturbance</h2>
+          <p class="lead">The project stops being a clean-simulation controller and becomes a
+          robustness study: wind, intermittent detection, and domain randomization.</p>
+        </div>
+        <details class="stage" open>
+          <summary><span class="sid">4b</span>
+            <span class="stitle"><b>Wind + intermittent detector + domain randomization</b>
+              <span>Ornstein–Uhlenbeck wind, distance/angle-dependent dropout, DR bands</span></span>
+            <span class="sresult">91% nominal</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow why"><span class="alabel">Why 4a insufficient</span><p>It assumed a perfect, continuous detection and still air. Neither holds in flight.</p></div>
+              <div class="arow"><span class="alabel">What changed</span><p>An OU wind process coupled through linear drag \(\mathbf a_{\text{drag}}=-k(\mathbf v-\mathbf v_{\text{wind}})\); an intermittent detector with dropout probability \(p_{\text{detect}}=\sigma(\beta_1/d-\beta_2(1-m_{\text{FOV}})+\beta_3)\); DKF runs prediction-only on dropped frames. Domain randomization samples wind &amp; detector bands per episode.</p></div>
+              <div class="arow"><span class="alabel">Results</span><p>Graceful degradation: <b>91%</b> nominal (~50% dropout) → 74% hard → 31.5% worst (~92% dropout + 1.5 m/s wind). DR buys +14–23pp over a non-randomized policy for a ~5pp disturbance-free cost.</p></div>
+              <div class="arow next"><span class="alabel">Why next</span><p>The target was still a point mass with unphysical instantaneous turns — an unfair, ill-posed adversary. Stage 5 makes it a real, equal-agility 6-DOF drone.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="media"><video controls preload="metadata" playsinline>
+                <source src="../logs/stages/stage4b_dr_finetune/videos/replay_best.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>Stage 4b — interception under wind + dropout</b><p>The robustness milestone clip.</p>
+                <div class="tags"><span class="tag win">graceful degradation</span><span class="tag">domain randomization</span></div></div></div>
+              <div class="media"><img src="../report/figures/stage4b_degradation.png" alt="4b degradation" data-cap="DR vs no-DR across nominal/hard/worst conditions.">
+                <div class="mcap"><b>Robustness across conditions</b><p>Domain randomization is the lever that produces graceful, not catastrophic, degradation.</p></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ STAGE 5 ============ -->
+    <section id="stage5">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Development stage 5 · the scientific climax</div>
+          <h2>An equal-agility 6-DOF evader exposes a clean capability boundary</h2>
+          <p class="lead">The target is no longer a point mass. It flies the <em>same</em>
+          <code>Multicopter6DOFLite</code> model with the <em>same</em> agility limits as the
+          interceptor, driven by an evasion curriculum. Two experiments, run with confounds
+          deliberately removed.</p>
+        </div>
+
+        <div class="note warn" style="margin-bottom:18px">
+          <b>Methodological note (recorded honestly in the repo).</b> Two confounds were caught and
+          fixed before reporting: (1) a <b>speed confound</b> — the first 6-DOF target cruised faster
+          than the training regime, making every episode a tail-chase; fixed by matching the spawned
+          speed. (2) A <b>stacked-difficulty / std-runaway confound</b> in Claim B v1 — wind+dropout
+          were on top of the 6-DOF target and the action std diverged; fixed with a clean perception
+          stack and a log-std cap. The numbers below are post-fix.
+        </div>
+
+        <details class="stage" open>
+          <summary><span class="sid">5·A</span>
+            <span class="stitle"><b>Claim A — zero-shot generalization (fixed reward, only the target changes)</b>
+              <span>HardNet-D evaluated as-is against the 6-DOF evader curriculum</span></span>
+            <span class="sresult">FOV ~94% · intercept fails on turns</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Question</span><p>Does a policy trained only on simple targets transfer, unchanged, to an equally-agile maneuvering 6-DOF adversary?</p></div>
+              <div class="arow"><span class="alabel">Setup</span><p>Locked HardNet-D, fixed reward/training, full clean perception stack, 100 ep/level. Evasion curriculum: <code>cruise → steady_turn → weave → break_turn → random_evasive</code>.</p></div>
+              <div class="arow"><span class="alabel">Result</span><p><b>FOV-tracking generalizes</b> (91–97% retention across all levels, even where interception fails). <b>Interception does not</b>: cruise recovers to 75%, but any sustained turn drops to 0–12%. Attitude exceedance ≤0.006%.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="media" style="max-width:none">
+                <video controls preload="metadata" playsinline>
+                  <source src="media/sixdof_equal_agility_steady_turn.mp4" type="video/mp4"></video>
+                <div class="mcap"><b>6-DOF equal-agility evader (rendered for this study)</b>
+                  <p>Seed 3001 · steady-turn level · FOV retention 93.9% · final distance 18.1 m · outcome: FOV loss. The target is held in frame for most of the episode, but the interceptor cannot close — the faithful clip of the final finding (not a point-mass evasion video).</p>
+                  <div class="tags"><span class="tag fail">no intercept</span><span class="tag safe">FOV held ~94%</span><span class="tag">equal agility</span></div></div>
+              </div>
+              <div class="card">
+                <h4>Claim A — zero-shot success by level</h4>
+                <div class="bars">
+                  <div class="bar-row"><span>cruise</span><div class="bar-track"><div class="bar-fill" style="width:75%"></div></div><b>75%</b></div>
+                  <div class="bar-row"><span>steady_turn</span><div class="bar-track"><div class="bar-fill red" style="width:2%"></div></div><b>0%</b></div>
+                  <div class="bar-row"><span>weave</span><div class="bar-track"><div class="bar-fill red" style="width:5%"></div></div><b>5%</b></div>
+                  <div class="bar-row"><span>break_turn</span><div class="bar-track"><div class="bar-fill red" style="width:12%"></div></div><b>12%</b></div>
+                  <div class="bar-row"><span>random</span><div class="bar-track"><div class="bar-fill red" style="width:12%"></div></div><b>12%</b></div>
+                </div>
+                <p class="small" style="margin-top:12px">FOV retention stays 91–97% on every row. The safety + perception
+                stack does its job zero-shot; the guidance does not transfer to sustained maneuvers.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <details class="stage" open>
+          <summary><span class="sid fail">5·B</span>
+            <span class="stitle"><b>Claim B — curriculum training (does training fix it?)</b>
+              <span>Cumulative maneuver curriculum, clean stack, std-capped</span></span>
+            <span class="sresult">No — stalls at steady_turn</span><span class="schevron">▶</span></summary>
+          <div class="sbody">
+            <div class="anatomy">
+              <div class="arow"><span class="alabel">Question</span><p>If zero-shot fails, can the framework be <em>trained</em> to intercept the maneuvering 6-DOF target?</p></div>
+              <div class="arow"><span class="alabel">Setup</span><p>Cumulative curriculum: start at <code>cruise</code>, append the next level once rolling success crosses 60%. Warm-start HardNet-D, clean stack (matches Claim A), log-std cap to prevent runaway, 5M steps.</p></div>
+              <div class="arow lim"><span class="alabel">Result</span><p>The curriculum unlocked <b>exactly one level</b>: it mastered cruise, advanced to <code>steady_turn</code>, and never reached 60% there — so the harder levels never unlocked. Per-level interception stays within noise of zero-shot. std stayed stable (1.64) — this is a genuine capability ceiling, not instability.</p></div>
+              <div class="arow"><span class="alabel">Why steady_turn is hardest</span><p>A sustained banked turn is harder than a reactive break-turn (0% vs 5–12%). The <b>forward-fixed camera couples look-direction to flight-direction</b>: the interceptor cannot simultaneously sustain the turn-to-pursue and keep its nose on a target curving inside its own turn radius. With equal agility, pure-pursuit geometry is unwinnable.</p></div>
+            </div>
+            <div class="grid c2">
+              <div class="card">
+                <h4>Claim B — curriculum-trained success by level</h4>
+                <div class="bars">
+                  <div class="bar-row"><span>cruise</span><div class="bar-track"><div class="bar-fill amber" style="width:78%"></div></div><b>78%</b></div>
+                  <div class="bar-row"><span>steady_turn</span><div class="bar-track"><div class="bar-fill red" style="width:2%"></div></div><b>0%</b></div>
+                  <div class="bar-row"><span>weave</span><div class="bar-track"><div class="bar-fill red" style="width:9%"></div></div><b>9%</b></div>
+                  <div class="bar-row"><span>break_turn</span><div class="bar-track"><div class="bar-fill red" style="width:5%"></div></div><b>5%</b></div>
+                  <div class="bar-row"><span>random</span><div class="bar-track"><div class="bar-fill red" style="width:5%"></div></div><b>5%</b></div>
+                </div>
+                <p class="small" style="margin-top:12px">Within noise of zero-shot. Training does not crack the equal-agility pursuit geometry.</p>
+              </div>
+              <div class="note bad">
+                <h4 style="color:#fff">Why this negative result is the climax</h4>
+                <p>It cleanly separates two competencies: the <b>safety + perception layer generalizes</b>
+                (FOV held ~94% whether trained or not), while <b>interception is bounded by the
+                platform + sensor geometry</b> and is not recoverable by training. That is a precise,
+                defensible scientific boundary — far more valuable than an over-claimed success.</p>
+                <p style="margin-bottom:0">The implied fixes are architectural, not "more PPO": a
+                <b>gimbaled camera</b> to decouple looking from flying, and/or <b>lead-pursuit /
+                predictive guidance</b> instead of pure pursuit.</p>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- ============ CONCLUSION ============ -->
+    <section id="conclusion">
+      <div class="inner">
+        <div class="khead">
+          <div class="kicker">Synthesis</div>
+          <h2>Two contributions and one honest boundary</h2>
+        </div>
+
+        <div class="tablewrap" style="margin-bottom:22px">
+          <table>
+            <thead><tr><th>Added layer</th><th>Behaviour change</th><th>Benefit</th><th>Remaining limitation</th></tr></thead>
+            <tbody>
+              <tr><td><b>DKF observer</b></td><td>Policy conditions on filtered image state, not raw noisy/delayed pixels.</td><td class="ok">Vision-only control becomes trainable under imperfect sensing.</td><td>4-D filter saturates at full noise — needs a higher-dim EKF.</td></tr>
+              <tr><td><b>6-DOF + SO(3)</b></td><td>Actions pass through realistic attitude &amp; thrust response.</td><td class="ok">66% → 96.5% at mild noise — the project's biggest jump.</td><td>Lite model: no aero drag / rotor mixing.</td></tr>
+              <tr><td><b>CBF safety</b></td><td>Unsafe FOV/attitude actions are corrected (QP) or projected.</td><td class="ok">Attitude violations from 9–39% of steps → ≤0.1%.</td><td>External filter can mask an unsafe raw policy.</td></tr>
+              <tr><td><b>HardNet-D</b></td><td>Differentiable in-policy projection + feasibility loss.</td><td class="ok">+9.7pp worst-case; beats external filter; no online QP at inference.</td><td>Cannot solve an impossible pursuit geometry.</td></tr>
+              <tr><td><b>Realism (4b)</b></td><td>Wind, dropout, DR.</td><td class="ok">Graceful, quantified degradation.</td><td>Worst case still exposes limits.</td></tr>
+              <tr><td><b>6-DOF evader (5)</b></td><td>Equal-agility maneuvering target.</td><td class="ok">Reveals a clean, defensible capability boundary.</td><td class="no">Sustained-turn interception unsolved; needs gimbal / lead-pursuit.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid c3">
+          <div class="card"><h4>Contribution 1 — staged safe-IBVS pipeline</h4>
+            <p class="small">A controlled curriculum from clean visual pursuit through vision-only
+            perception, 6-DOF dynamics, hard CBF safety, wind, and detector dropout — each step
+            attributable to a single change.</p></div>
+          <div class="card"><h4>Contribution 2 — HardNet-D gradient conditioning</h4>
+            <p class="small">Identifies the Jacobian-rank pathology of in-policy CBF projection and
+            fixes it with a feasibility loss; restores full-rank gradients, lifts worst-case +9.7pp,
+            and surpasses the external filter while remaining a single differentiable controller.</p></div>
+          <div class="card"><h4>Boundary — equal-agility pursuit</h4>
+            <p class="small">Perception &amp; safety generalize to an equal-agility maneuvering target
+            (FOV ~94%); interception does not, and training does not fix it. The limit is the
+            forward-fixed camera + pure-pursuit geometry.</p></div>
+        </div>
+
+        <div class="note good" style="margin-top:20px">
+          <b>Honest scope.</b> This is a high-fidelity <em>simulation</em> study. The dynamics are a
+          lite 6-DOF model (no aero/rotor detail), the target is a point feature, and ego-state in
+          the observation is idealized. The natural next phase — flagged throughout — is a
+          gimbaled-camera / lead-pursuit architecture and a PX4/SITL hardware bridge where MAVLink
+          latency and real sensor noise will test these margins.
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="inner">
+        <div>
+          <strong style="color:#fff">Safe IBVS Reinforcement Learning · Multicopter Interception</strong><br>
+          <span class="small">Research notebook reconstructed from the repository's commit history, stage logs, configs, figures, and rendered videos. All numbers trace to committed evaluation logs.</span>
+        </div>
+        <div class="small">
+          <a href="../report/master_report.pdf">Master technical report (PDF)</a> ·
+          <a href="../report/journal_paper.pdf">Q1 journal manuscript (PDF)</a> ·
+          <a href="../report/master_report.tex">LaTeX source</a>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<dialog class="lb" id="lb">
+  <button class="x" id="lbx" aria-label="Close">✕ Close</button>
+  <img id="lbimg" alt="">
+</dialog>
+
+<div id="tip" style="position:fixed;z-index:80;max-width:280px;padding:9px 12px;background:#0a1019;
+  border:1px solid var(--cyan-d);border-radius:8px;color:#dcecef;font-size:12.5px;line-height:1.45;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);display:none;pointer-events:none"></div>
+
+<script>
+  // scroll progress
+  const prog=document.getElementById('progress');
+  function upd(){const m=document.documentElement.scrollHeight-innerHeight;
+    prog.style.width=(m>0?scrollY/m*100:0)+'%';}
+  addEventListener('scroll',upd,{passive:true});upd();
+
+  // active nav via IntersectionObserver
+  const links=[...document.querySelectorAll('#nav a')];
+  const secs=[...document.querySelectorAll('section[id],header[id]')];
+  const io=new IntersectionObserver(es=>{
+    const v=es.filter(e=>e.isIntersecting).sort((a,b)=>b.intersectionRatio-a.intersectionRatio)[0];
+    if(!v)return;links.forEach(l=>l.classList.toggle('active',l.getAttribute('href')==='#'+v.target.id));
+  },{rootMargin:'-25% 0px -60% 0px',threshold:[0,.25,.6]});
+  secs.forEach(s=>io.observe(s));
+
+  // image lightbox
+  const lb=document.getElementById('lb'),lbimg=document.getElementById('lbimg');
+  document.querySelectorAll('.media img').forEach(img=>{
+    img.addEventListener('click',()=>{lbimg.src=img.src;lbimg.alt=img.alt;lb.showModal();});
+  });
+  document.getElementById('lbx').addEventListener('click',()=>lb.close());
+  lb.addEventListener('click',e=>{if(e.target===lb)lb.close();});
+
+  // term tooltips
+  const tip=document.getElementById('tip');
+  document.querySelectorAll('.term').forEach(t=>{
+    t.addEventListener('mouseenter',e=>{tip.textContent=t.dataset.tip;tip.style.display='block';});
+    t.addEventListener('mousemove',e=>{
+      tip.style.left=Math.min(e.clientX+14,innerWidth-300)+'px';
+      tip.style.top=(e.clientY+16)+'px';});
+    t.addEventListener('mouseleave',()=>tip.style.display='none');
+  });
+
+  // lazy-play videos when scrolled into view (perf)
+  const vids=[...document.querySelectorAll('main video[controls]')];
+  const vio=new IntersectionObserver(es=>es.forEach(e=>{
+    if(!e.isIntersecting && !e.target.paused) e.target.pause();
+  }),{threshold:.1});
+  vids.forEach(v=>vio.observe(v));
+</script>
+</body>
+</html>
