@@ -12,11 +12,13 @@ ZIP=IBVS_SafeRL_research_site.zip
 rm -rf "$OUT" "$SRC/$ZIP"
 mkdir -p "$OUT/assets"
 
-# 1) copy the page + its local media folder
+# 1) copy the page + its local media folder.
+#    The HTML references local media as "media/<file>" (NOT "../..."), so it
+#    must live at <bundle>/media/ — keep that exact relative path.
 cp "$SRC/index.html" "$OUT/index.html"
 cp "$SRC/README.md"  "$OUT/README.md" 2>/dev/null || true
-mkdir -p "$OUT/assets/media"
-cp "$SRC"/media/*.mp4 "$OUT/assets/media/" 2>/dev/null || true
+mkdir -p "$OUT/media"
+cp "$SRC"/media/*.mp4 "$OUT/media/" 2>/dev/null || true
 
 # 2) collect every external src (../logs/.. and ../report/..) and copy it in,
 #    flattening to assets/<stage_or_fig>__<file> to avoid name clashes.
