@@ -66,3 +66,6 @@ logs/stages/stage3a/*
 # Presentation website media (the rendered 6-DOF evader clip)
 !presentation_html/media/
 !presentation_html/media/*.mp4
+# Presentation bundle build artifacts (regenerate via build_bundle.sh)
+presentation_html/_bundle/
+presentation_html/*.zip
