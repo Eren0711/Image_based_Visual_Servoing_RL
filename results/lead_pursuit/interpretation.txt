@@ -1,0 +1,42 @@
+LEAD-PURSUIT GUIDANCE — INTERPRETATION
+============================================================
+
+Setup: HardNet-D (lambda=0.05) locked policy, the SAME checkpoint as the
+agility ablation and the standard evader eval. 100 seeds (0-99) per mode,
+identical across lead times, deterministic. Only the observation is
+transformed (obs[0:2] -> lead-corrected); reward/dynamics/target unchanged.
+Velocity used for the lead is the DKF FILTERED estimate (obs[2:4]),
+converted to consistent units (position scaled by tan(half_fov),
+velocity by MAX_DP=10.0; factors kx=14.28, ky=19.21 per second).
+
+Steady-turn success by lead time (%):
+  0s=0  0.1s=0  0.2s=0  0.3s=0  0.5s=0  0.75s=0  1s=0  1.5s=0
+
+1) Best lead time for STEADY-TURN success: T=0s -> 0%
+2) Best lead time for OVERALL MEAN success: T=0s -> 24.2%
+   (baseline T=0 mean = 24.2%)
+3) Recovers steady-turn above 30%? NO; above 10%? NO
+4) Does FOV retention degrade with longer lead (steady-turn)? YES
+   steady-turn FOV retention by T (%): 0s=91, 0.1s=91, 0.2s=86, 0.3s=84, 0.5s=84, 0.75s=83, 1s=83, 1.5s=84
+5) A lead time that improves turn WITHOUT hurting cruise: NONE
+
+OVERALL CONCLUSION: INSUFFICIENT.
+
+Supporting detail — does leading improve closure even when success does not?
+  steady-turn mean closure rate (m/s, neg=closing): 0s=-1.80, 0.1s=-1.54, 0.2s=0.22, 0.3s=1.06, 0.5s=1.42, 0.75s=1.71, 1s=1.93, 1.5s=2.02
+
+RECOMMENDED NEXT STEP: Proceed to a temporal-memory experiment (LSTM / stacked observation history). A single-step lead from the DKF velocity is insufficient; the policy likely needs to infer the target's turn from a history of observations rather than a one-step linear extrapolation.
+
+------------------------------------------------------------
+CAVEATS / NOTES:
+- Zero-shot transform: the policy was TRAINED on pure-pursuit observations,
+  so feeding it a lead-shifted error is itself out-of-distribution. A drop
+  in cruise success at larger T is expected for this reason and does not by
+  itself prove lead pursuit is a bad idea --- only that this policy cannot
+  exploit it without retraining.
+- The lead uses the DKF filtered image velocity (obs[2:4]), not the raw
+  noisy measurement; the DKF velocity is smoother but lags fast turns.
+- Unit handling: position and velocity obs channels are normalized
+  differently (tan(half_fov) vs MAX_DP=10.0); the wrapper converts to a
+  common raw-p_bar unit before adding, so the lead is dimensionally correct.
+- Success radius for reference: d_success = 2 m.
