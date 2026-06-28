@@ -1,0 +1,50 @@
+ASYMMETRIC AGILITY ABLATION — INTERPRETATION
+============================================================
+
+Setup: HardNet-D (lambda=0.05) locked policy, the SAME checkpoint
+used in the standard evader evaluation (Claim A). 100 seeds (0-99)
+per maneuver mode, identical across multipliers, deterministic
+policy. Only the interceptor's a_max, f_max, and omega_max are
+scaled; the target is untouched (verified: target.a_max stays
+10.0 m/s^2 while interceptor.a_max reaches 30.0 at 3.0x).
+
+Steady-turn success by multiplier (%):
+  1.0x=0  1.2x=0  1.5x=0  2.0x=0  3.0x=0
+
+1) First multiplier with >30% steady-turn success: NONE (no multiplier reached 30%)
+
+2) Is mean success monotonic in agility? NO
+   Mean success across modes per multiplier: 1.0x=24.2%, 1.2x=25.6%, 1.5x=23.6%, 2.0x=14.0%, 3.0x=0.0%
+   -> Non-monotonic: extra agility does not help and can hurt,
+      consistent with the trained policy being driven out of
+      distribution when its control gains are amplified.
+
+3) Does closure improve with agility on steady turns even when
+   success does not?
+   mean closure rate (m/s, neg=closing): 1.0x=-1.80, 1.2x=-1.80, 1.5x=-1.37, 2.0x=-0.44, 3.0x=0.16
+   mean min-range (m): 1.0x=13.7, 1.2x=13.8, 1.5x=14.8, 2.0x=15.9, 3.0x=16.9
+   closure improves with agility: NO; closest-approach improves: NO
+
+4) CONCLUSION: the failure is GUIDANCE-LIMITED.
+
+5) RECOMMENDED NEXT EXPERIMENT: Proceed to the lead-pursuit / predictive-guidance experiment. Even 2.0x interceptor agility does not lift turning interception above 10%, so simply giving the existing guidance more muscle is not the fix; the guidance law itself must anticipate the turn.
+
+------------------------------------------------------------
+CONFOUNDS FLAGGED (not fixed, per task spec):
+- Normalized action space: actions are in [-1,1] and scaled by
+  a_max, so raising the limits also amplifies the TRAINED policy's
+  effective control gains. The policy was calibrated at 1.0x, so
+  high multipliers push it out of distribution (e.g. cruise itself
+  can degrade). A clean agility-limit test would require RETRAINING
+  at each multiplier; this zero-shot ablation cannot fully separate
+  'more agility' from 'amplified, miscalibrated commands'.
+- v_max, max_pitch, and max_roll are NOT scaled. Top speed stays
+  capped (interceptor already out-cruises the ~12 m/s target), and
+  achievable lateral acceleration from tilting remains bounded by
+  the fixed attitude limits, partially gating the benefit of larger
+  a_max/f_max.
+- Observation space is unchanged: body velocity is normalized by the
+  unscaled v_max and attitude by the unscaled max_pitch/max_roll, so
+  those observation components can saturate at high multipliers,
+  changing their effective meaning to the policy.
+- Success radius for reference: d_success = 2 m.
