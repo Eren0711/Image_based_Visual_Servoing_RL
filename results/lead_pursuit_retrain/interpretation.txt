@@ -1,0 +1,30 @@
+LEAD-PURSUIT RETRAIN — INTERPRETATION
+============================================================
+
+Warm-started from HardNet-D locked (lambda=0.05); LeadPursuitWrapper T=0.3
+active during BOTH training and evaluation. Trained against the 6-DOF evader with
+maneuver distribution cruise/turn/weave/break/random = 20/40/15/15/10%. All PPO
+hyperparameters inherited from the checkpoint (HardNetDPPO.load). Perception stack =
+noise+delay+DKF+CBF-context (matches the agility & zero-shot eval distribution).
+
+Final eval (100 ep/mode, seeds 0-99, deterministic, T=0.3):
+  Cruise=15%  Turn=0%  Weave=1%  Break=0%  Random=0%  mean=3.2%
+
+1) Steady-turn success: 0%  -> above 0%? NO; above 10%? NO; above 30%? NO
+2) Training step where steady-turn first appeared: never (stayed 0%)
+3) Cruise vs baseline: retrained=15% vs pure-pursuit=71% -> hurt
+4) Best overall mean success: retrained=3.2% (pure-pursuit=24.2%, zero-shot=11.2%)
+5) FOV retention (retrained): Cruise=94%, Turn=92%, Weave=93%, Break=94%, Random=94%
+
+OVERALL CONCLUSION: LEAD PURSUIT FUNDAMENTALLY INSUFFICIENT.
+
+RECOMMENDED NEXT STEP: Proceed to a temporal-memory architecture (recurrent/LSTM policy or stacked observation history). A single-step linear lead, even when trained on, cannot capture a sustained curving target; and consistent with the agility ablation and Claim B, the fixed-camera + equal-agility geometry is the binding limit.
+
+------------------------------------------------------------
+NOTES / CAVEATS:
+- Claim B already trained on this evader WITHOUT lead pursuit and steady-turn
+  stayed ~0%; this experiment adds only the lead observation. Compare directly.
+- Lead uses the DKF filtered image velocity (obs[2:4]); single-step linear
+  extrapolation overshoots a curving (non-constant-velocity) target.
+- Perception stack excludes wind/intermittent detection to match the evader-eval
+  distribution used by all prior experiments (documented design choice).
