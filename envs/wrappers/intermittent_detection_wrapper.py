@@ -48,6 +48,8 @@ import math
 import numpy as np
 import gymnasium as gym
 
+from runtime.seeding import derive_seed
+
 
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
@@ -110,6 +112,7 @@ class IntermittentDetectionWrapper(gym.Wrapper):
             **(randomization_ranges or {}),
         }
         self._rng = np.random.default_rng(seed)
+        self._last_seed = seed
         self.verbose = bool(verbose)
 
         # Episode counters (reset each episode)
@@ -173,10 +176,21 @@ class IntermittentDetectionWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+        reset_seed = kwargs.get('seed')
+        if reset_seed is not None:
+            self._last_seed = derive_seed(
+                reset_seed, 'intermittent_detection'
+            )
+            self._rng = np.random.default_rng(
+                self._last_seed
+            )
         self._maybe_randomize()
         self._n_steps = 0
         self._n_dropped = 0
         self._n_targets_in_fov = 0
+        info.setdefault('seed_bundle', {})[
+            'intermittent_detection'
+        ] = self._last_seed
         return obs, info
 
     def step(self, action):

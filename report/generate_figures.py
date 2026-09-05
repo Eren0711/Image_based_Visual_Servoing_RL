@@ -5,10 +5,10 @@ Produces every chart used in report/master_report.tex from REAL data:
   - TensorBoard learning curves (per stage, where logs exist)
   - The cross-stage summary charts (noise sensitivity, CBF method comparison,
     intervention arc, λ ablation) hand-keyed from the committed eval matrices
-    in docs/*.md and the per-stage 200-ep evaluations.
+    in docs/legacy/studies/*.md and the per-stage 200-ep evaluations.
 
-All numeric values used here are the SAME numbers committed in the docs/
-writeups and stage commit messages — nothing is invented. Where a value
+All numeric values used here are the SAME numbers committed in the historical
+study writeups and stage commit messages — nothing is invented. Where a value
 comes from a fixed-seed 200-ep eval it is annotated in the docstring of the
 relevant function.
 

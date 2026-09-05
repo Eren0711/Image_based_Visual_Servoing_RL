@@ -1,0 +1,292 @@
+# LEGACY CONFIGURATION
+# --------------------
+# Preserved for reconstructing the historical point-mass Stage 3b/4 runs.
+# It is NOT the canonical system and is no longer the default for new work.
+# New development uses:
+#   configs/canonical/fixed_camera_intercept_v1.yaml
+# See PROJECT.md for the frozen scope.
+# =============================================================================
+# RL-Based Image-Guided Drone Interception — Stage 3a Configuration
+# Reference: "High-Speed Interception Multicopter Control by IBVS"
+#            Yang, Bai, She, Quan (arXiv:2404.08296)
+#
+# Stage 3a: First-Order Inertia + Attitude-Camera Coupling
+#   - Drone velocity responds with τ=0.2s time constant (realistic lag)
+#   - Pitch/roll derived from acceleration → camera tilts with maneuvers
+#   - Attitude stability penalty added to reward
+#   - FRESH training (dynamics fundamentally changed)
+#
+# Coordinate convention: NED (North-East-Down), z-axis points downward
+# =============================================================================
+
+# --- Camera parameters ---
+camera:
+  f_oc: 300.0
+  alpha_hfov: 1.2217               # ~70°
+  alpha_vfov: 0.9599               # ~55°
+  R_c_b_euler: [0.0, -1.5707963, 0.0]
+
+# --- Interceptor drone ---
+interceptor:
+  # Model selector: 'kinematic_3a' or 'multicopter_6dof'
+  #   kinematic_3a    — first-order velocity lag + pitch=arctan(a/g) coupling
+  #                      (Stage 3a model, default for backward compat)
+  #   multicopter_6dof — full Newton-Euler dynamics with SO(3) PD attitude
+  #                      controller, quaternion attitude, motor & rate-loop lag
+  #                      (Stage 3b "lite" — no drag, no rotor mixing)
+  model: 'multicopter_6dof'
+
+  # Shared parameters (used by both models)
+  v_max: 15.0
+  a_max: 10.0
+  yaw_rate_max: 0.7854             # ~π/4
+  dt: 0.02                         # 50 Hz
+  max_pitch_deg: 35.0
+  max_roll_deg:  35.0
+
+  # Stage 3a kinematic-model parameters (ignored when model='multicopter_6dof')
+  tau_velocity: 0.15
+  tau_yaw_rate: 0.10
+
+  # Stage 3b 6-DOF-model parameters (ignored when model='kinematic_3a')
+  dynamics_6dof:
+    mass: 1.0                      # kg — typical small quad
+    J_xx: 0.01                     # kg·m² body-x inertia
+    J_yy: 0.01                     # kg·m² body-y inertia
+    J_zz: 0.02                     # kg·m² body-z inertia (slightly higher,
+                                   # asymmetric yaw inertia typical for quads)
+    tau_motor: 0.05                # motor thrust response time constant (s)
+                                   # 0.05s ≈ typical BLDC + ESC bandwidth
+    tau_rate:  0.05                # rate-loop tracking time constant (s)
+                                   # Captures inner-loop attitude bandwidth
+                                   # (200 Hz in paper Eq. 28 → ~5ms; we use
+                                   # 50ms because the env steps at 50 Hz and
+                                   # finer would require sub-stepping)
+    thrust_to_weight: 3.0          # max thrust / weight (matches paper)
+    omega_max: 4.0                 # body angular velocity saturation (rad/s)
+                                   # ~230°/s, typical for aggressive flight
+    k_attitude: 6.0                # SO(3) PD gain on attitude error
+                                   # Higher = stiffer R_d tracking
+
+# --- Target drone ---
+target:
+  v_max: 10.0
+  a_max: 5.0                       # 0.5g — the CANONICAL ceiling used by the
+                                   # trained policy's eval distribution. NOTE:
+                                   # this clamps the 'evasive' mode's high-g
+                                   # turns; raise a_max (e.g. 25) when testing
+                                   # genuine aggressive evasion (see evasive_g).
+  maneuver_modes: ['constant_velocity', 'sinusoidal']
+  sin_amplitude: 3.0
+  sin_frequency: 1.5
+  circle_radius: 15.0
+  circle_omega: 0.5
+  random_switch_interval: 25
+  # --- Evasive mode (reactive, turn-rate-limited high-g evasion) ---
+  # Not in the default maneuver_modes (would change the trained policy's eval
+  # distribution silently); selected explicitly by the evasion eval harness.
+  evasive_g: 2.0                   # peak lateral acceleration (g)
+  evasive_turn_rate: 2.5           # max heading-change rate (rad/s)
+  evasive_jink_period: 1.0         # mean s between evasive direction flips
+  evasive_react_dist: 25.0         # pursuer range (m) for reactive break-turn
+
+# --- Environment ---
+env:
+  max_steps: 500
+  d_success: 2.0                   # Was 0.5 — physically achievable given the
+                                   # 2.25 m braking distance at v_max=15, τ=0.15.
+                                   # 2.0 m miss distance is realistic for ~30cm
+                                   # drone-on-drone visual interception.
+  d_image_cutoff: 25.0             # Distance beyond which image-centering reward
+                                   # is zero. Closes the loiter-at-distance local
+                                   # optimum: without this gate, the agent could
+                                   # harvest +0.4/step image reward at 35m while
+                                   # avoiding FOV-loss risk, dominating commits.
+                                   # With cutoff=25: image reward decays linearly
+                                   # to 0 at 25m, full value at the target. Loiter
+                                   # at >=25m now pays zero image reward, only
+                                   # closure earns positive returns.
+  fov_loss_limit: 15                # 10 (clean v2) → 15 for noisy stages.
+                                   # The -5/-20 experiment showed reward tuning doesn't
+                                   # rescue noise-induced FOV losses; this modest bump
+                                   # gives the DKF time to re-acquire after a brief
+                                   # slip without making episodes drag on indefinitely.
+  init_distance_range: [10.0, 30.0]
+  norm_distance_max: 50.0
+  norm_velocity_max: 15.0
+
+# --- Depth estimator ---
+depth_estimator:
+  rho_init: 0.05
+  P_init: 1.0
+  Q: 0.001
+  R_base: 0.1
+  rho_min: 0.005
+  rho_max: 2.0
+  confidence_threshold: 0.01
+
+# --- Measurement noise and delay ---
+# Operating points tested:
+#   --- Kinematic dynamics (Stage 3a) ---
+#   delay=1, sigma=0.015 + CV DKF:         62%  (3a-noisy-mild, 7.0M, 50 ep)
+#   delay=1, sigma=0.015 + CV DKF + brake: 66%  (3a-noisy-mild-polished, 7.8M, 50 ep)
+#   delay=1, sigma=0.015 + IMU DKF:        66%  (3a-noisy-imu-dkf, 5.0M, 50 ep)
+#   delay=3, sigma=0.03  + CV DKF:          0%  (3a-noisy-full; collapsed)
+#   delay=3, sigma=0.03  + IMU DKF:         0%  (3a-noisy-full-imu-dkf; collapsed)
+#   --- 6-DOF dynamics (Stage 3b) ---
+#   clean (no wrapper):                    96.0% (3b-clean, 7M, 200 ep seed=1000)
+#   delay=1, sigma=0.015 + IMU DKF:        96.5% (3b-noisy-mild, 4M, 200 ep seed=1000)
+#   delay=3, sigma=0.03  + IMU DKF:         ~2% (3b-noisy-full; collapsed, stopped early)
+#   --- 6-DOF + CBF safety filter (Stage 4a) ---
+#   4a.1 bisection bolt-on (no retrain): 84.0% / 16.0% / 0 pitch-roll viol, 79% corr rate, 0.55 avg norm
+#   4a.2 bisection co-trained, 2M ckpt:  85.5% / 14.5% / 0 viol, 87% corr rate, 0.65 avg norm
+#   4a.3 HOCBF bolt-on (no retrain):     89.0% / 11.0% / ~0% actual viol*, 55% corr rate, 0.36 avg norm
+#   4a.3 HOCBF co-trained, 2.8M ckpt:    88.5% / 11.5% — fine-tuning did NOT help, see below.
+#   *Actual safety: max|pitch|=0.563 (under 0.611 limit), max|roll|=0.616 over by 0.005 rad on 0.1% of steps.
+#   The Phase 4a "violations" counter tracks h_inner_margin < 0, not real limit breaches.
+#
+#   Best CBF result locked: HOCBF on the existing 3b-noisy-mild 4M ckpt at
+#   alpha_fov=100, alpha_attitude=100, attitude_safety_margin=0.10. No new
+#   policy file — the safety guarantee comes from the wrapper, not new weights.
+#   Fine-tuning with HOCBF in the loop did not improve over the bolt-on result
+#   (the formulation is already minimally invasive; the locked policy operates
+#   near-optimally within the inner-margin safety envelope).
+#
+#   The remaining 7.5pp success cost (96.5% -> 89%) is the inherent price of
+#   guaranteed pitch/roll safety on this dynamics + action space.
+#
+#   --- Stage 4b: realistic perception + wind disturbance ---
+#   Multi-condition 200-ep eval (seed=1000), 4b 1.0M (locked) vs 3b 4M + HOCBF:
+#                                          4b 1.0M      3b locked
+#     Clean (no wind, no miss):            84.0%        89.0%       -5.0pp (DR cost)
+#     Nominal (sig=1.0, b3=1.0, drop~50%): 91.0%        76.5%      +14.5pp
+#     Hard    (sig=1.5, b3=0,  drop~75%):  74.0%        51.0%      +23.0pp
+#     Worst   (sig=1.5, b3=-1, drop~92%):  31.5%        16.0%      +15.5pp
+#   The 4b policy pays 5pp in disturbance-free conditions to gain 14-23pp under
+#   realistic noise/wind/missed-detection conditions. All plan criteria met.
+# Conclusion: the 4-dim image-plane DKF saturates between mild and full noise,
+# independent of the inner-loop dynamics (kinematic vs 6-DOF). IMU feedforward
+# eliminates the brake-penalty hack at mild noise but cannot close the full-spec
+# ceiling — that requires the paper's 18-dim EKF (quaternion attitude + IMU bias
+# states), which is out of scope for this project.
+# Mild noise retained only as this legacy profile's historical working spec.
+noise_delay:
+  delay: 1
+  sigma_noise: 0.015
+
+# --- DKF parameters ---
+dkf:
+  sigma_pos_process: 0.01
+  sigma_vel_process: 0.5
+  sigma_measurement: 0.03
+  P_init_pos: 0.1
+  P_init_vel: 1.0
+
+# --- Reward weights ---
+# Stage 3a-v2 rebalance (Option B fixes):
+#   Root cause of v1 failure (2% deterministic success, 50% FOV loss):
+#   image-centering reward dominated closure reward, so the policy
+#   learned to fly past the target while keeping it framed.
+#
+#   Changes from v1:
+#     w_image:        1.0  →  0.4   (de-emphasize pure tracking)
+#     w_approach:     0.6  →  2.0   (make closure progress dominate)
+#     w_dist_penalty: NEW  → -0.02  (per-step anti-loiter pressure)
+reward:
+  w_image:        0.4
+  w_approach:     2.0
+  w_dist_penalty: -0.15        # 0.02 → 0.15 after stage3a_noisy_mild showed the
+                               # loiter local optimum: agent backed off to 40m+
+                               # to harvest +0.24/step image reward against only
+                               # -0.016/step distance penalty (net +0.17/step).
+                               # At -0.15: 40m gives -0.12/step, which outweighs
+                               # image reward and forces closure. At d_success
+                               # (2m): -0.006/step, negligible — doesn't punish
+                               # near-target hovering during terminal approach.
+  w_near_brake:   -0.05        # Near-target braking penalty. 79% of FOV losses
+                               # in noisy-mild ended at d=2.5-5m — agent over-
+                               # commits terminally and pitches too hard right
+                               # at the success threshold. Penalty form:
+                               #   w * |v_body| * max(0, (d_brake - d)/d_brake)
+                               # Zero outside d_brake. Inside, scales with both
+                               # speed and proximity. At d=2m, v=5m/s: -0.15/step;
+                               # at d=4m, v=10m/s: -0.10/step. Doesn't affect
+                               # cruise (d>d_brake) and doesn't punish slow
+                               # near-target hovering.
+  d_brake:         5.0         # Distance threshold (m) below which the near-
+                               # target brake penalty activates.
+  w_fov_loss: -3.0                  # -20 (v2 clean) → -3 (3a-noisy).
+                                   # Previously -5 didn't help because loiter was
+                                   # the optimal strategy regardless of FOV penalty
+                                   # magnitude. With image reward now gated by
+                                   # distance (d_image_cutoff), loiter pays -107
+                                   # per episode and the only positive-reward
+                                   # strategy is commit. The breakeven success
+                                   # rate for "commit beats loiter" is ~33%; at
+                                   # -20 per FOV step (×15 steps = -300 per failed
+                                   # commit) the agent can't get there through
+                                   # exploration because failed attempts cost too
+                                   # much. At -3, failed commits cost only -17,
+                                   # so the gradient supports learning from
+                                   # repeated unsuccessful attempts.
+  w_boundary: -0.5
+  w_effort:   -0.05
+  w_jerk:     -0.05
+  w_attitude: -0.1
+  w_intercept: 200.0
+  w_timeout:  -0.05
+  k1_image:   5.0
+
+# --- Training ---
+training:
+  algorithm: PPO
+  total_timesteps: 15_000_000    # Fresh training — harder problem
+  n_envs: 16
+  policy: MlpPolicy
+  learning_rate: 0.0003          # Standard LR (fresh training)
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  log_dir: ./logs/tensorboard
+  save_dir: ./logs/models
+  checkpoint_freq: 200000
+  # Deterministic eval cadence (Stage 3a-v2 lesson: trust det-eval, not stochastic)
+  eval_freq: 1000000          # run det-eval every N training steps
+  eval_n_episodes: 20         # episodes per det-eval run (~20s wall-time)
+
+# --- Stage 4b: realistic perception + wind disturbances ---
+# Domain-randomization bands are the "hard" ranges agreed for training.
+# Worst-case eval-time bands (β₃=-1, σ=1.5) gave the locked HOCBF policy
+# 30% success and 70% FOV-loss; the trained policy should beat that.
+stage4b:
+  wind:
+    sigma: 1.0                   # OU noise intensity (m/s · s^-0.5).
+    theta: 0.5                   # OU mean-reversion rate (1/s); 1/θ = τ_corr.
+    k_drag: 0.1                  # Linear drag coupling (1/s).
+    randomization_ranges:
+      sigma: [0.0, 2.0]          # 0 = no wind; 2 = ~2 m/s RMS gusts
+      theta: [0.3, 1.0]          # 1-3.3s correlation time
+      k_drag: [0.05, 0.2]
+  detection:
+    # p_detect = sigmoid(β₁/d − β₂·(1 − fov_margin) + β₃)
+    # Default nominal: ~88% at d=10m centered, ~50% at d=30m centered.
+    beta_1: 8.0                  # distance term
+    beta_2: 4.0                  # FOV-edge penalty
+    beta_3: 1.0                  # bias
+    sigma_base: 0.0              # extra noise on p_bar at d=0
+    sigma_slope: 0.0005          # extra noise per metre of distance
+    randomization_ranges:
+      beta_1: [4.0, 14.0]        # at β₁=4 the distance term collapses fast
+      beta_2: [2.0, 6.0]
+      beta_3: [-1.0, 2.0]        # β₃=-1 + σ=1.5 = worst-case (30% success eval)
+
+# --- Evaluation ---
+evaluation:
+  n_episodes: 50
+  deterministic: true
+  save_dir: ./logs/eval
+  render: false

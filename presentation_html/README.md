@@ -33,7 +33,8 @@ hacking), 3b (96.5% robust), 4a HOCBF, 4a HardNet-D, 4b (wind+dropout).
 
 Final 6-DOF equal-agility evader clip: `media/sixdof_equal_agility_steady_turn.mp4`,
 rendered by `render_sixdof_evader_video.py` using the same 6-DOF target stack as
-`eval_evasion.py` (NOT the older point-mass `--evasive` target). Seed 3001,
+`../scripts/legacy/eval_evasion.py` (NOT the older point-mass `--evasive`
+target). Seed 3001,
 steady-turn level, FOV retention 93.9%, final distance 18.13 m, outcome FOV
 loss — the faithful clip of the Stage 5 finding.
 
@@ -49,7 +50,8 @@ python presentation_html/render_sixdof_evader_video.py
 
 ## Integrity
 
-All numeric claims trace to committed evaluation logs and the `docs/*.md`
+All numeric claims trace to committed evaluation logs and the
+`docs/legacy/studies/*.md`
 writeups. The site explicitly states the two methodological confounds (speed;
 stacked difficulty / std-runaway) that were caught and fixed in the Stage 5
 study.

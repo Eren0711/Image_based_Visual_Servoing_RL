@@ -20,6 +20,7 @@ Requirements:
 
 import os
 import argparse
+from pathlib import Path
 import yaml
 import numpy as np
 import matplotlib
@@ -30,13 +31,21 @@ from matplotlib import animation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from stable_baselines3 import PPO
-from envs.interception_env import InterceptionEnv
 from models.camera_model import PinholeCamera
+from runtime.environment import build_environment
 from experiment_paths import (
     default_model_path,
     ensure_stage_dirs,
     get_stage_paths,
 )
+from project_config import (
+    is_canonical_config,
+    is_canonical_config_path,
+    validate_canonical_config,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +58,7 @@ COLORS = {
     'fov_boundary': '#FFB703',      # Amber
     'success': '#06D6A0',           # Mint green
     'fail': '#EF476F',              # Rose
+    'envelope': '#FB8500',          # Orange
     'action_vx': '#8338EC',         # Purple
     'action_vy': '#3A86FF',         # Blue
     'action_vz': '#06D6A0',         # Mint
@@ -178,7 +188,7 @@ def create_animation(data, config, fps=20, save_path=None, skip=2):
 
     Args:
         data: Episode data dict from collect_episode().
-        config: Parsed config.yaml dict.
+        config: Parsed configuration mapping.
         fps: Frames per second for the animation.
         save_path: If set, save as MP4 to this path.
         skip: Plot every `skip`-th frame (for speed).
@@ -594,14 +604,20 @@ def create_summary_dashboard(all_data, config, save_path=None):
     outcomes = [d['outcome'] for d in all_data]
     n_success = sum(1 for o in outcomes if o == 'success')
     n_fov = sum(1 for o in outcomes if o == 'fov_loss')
+    n_envelope = sum(
+        1 for o in outcomes if o == 'flight_envelope_violation'
+    )
     n_timeout = sum(1 for o in outcomes if o == 'timeout')
 
     # ---- Panel 1: Outcome Pie ----
     ax_pie = fig.add_subplot(gs[0, 0])
     ax_pie.set_facecolor(COLORS['bg_dark'])
-    labels = ['Success', 'FOV Loss', 'Timeout']
-    sizes = [n_success, n_fov, n_timeout]
-    colors_pie = [COLORS['success'], COLORS['fail'], COLORS['fov_boundary']]
+    labels = ['Success', 'FOV Loss', 'Envelope', 'Timeout']
+    sizes = [n_success, n_fov, n_envelope, n_timeout]
+    colors_pie = [
+        COLORS['success'], COLORS['fail'], COLORS['envelope'],
+        COLORS['fov_boundary'],
+    ]
     # Filter out zero-sized slices
     non_zero = [(l, s, c) for l, s, c in zip(labels, sizes, colors_pie) if s > 0]
     if non_zero:
@@ -650,9 +666,12 @@ def create_summary_dashboard(all_data, config, save_path=None):
     ax_dcurves.set_facecolor(COLORS['bg_dark'])
     for d in all_data:
         t = np.arange(len(d['relative_distance'])) * dt
-        color = COLORS['success'] if d['outcome'] == 'success' else (
-            COLORS['fail'] if d['outcome'] == 'fov_loss' else COLORS['fov_boundary']
-        )
+        color = {
+            'success': COLORS['success'],
+            'fov_loss': COLORS['fail'],
+            'flight_envelope_violation': COLORS['envelope'],
+            'timeout': COLORS['fov_boundary'],
+        }.get(d['outcome'], COLORS['text'])
         ax_dcurves.plot(t, d['relative_distance'], color=color, alpha=0.4, lw=1)
     ax_dcurves.axhline(config['env']['d_success'], color=COLORS['success'],
                        ls='--', lw=1.5, alpha=0.7)
@@ -668,9 +687,12 @@ def create_summary_dashboard(all_data, config, save_path=None):
     ax_ecurves.set_facecolor(COLORS['bg_dark'])
     for d in all_data:
         t = np.arange(len(d['image_error'])) * dt
-        color = COLORS['success'] if d['outcome'] == 'success' else (
-            COLORS['fail'] if d['outcome'] == 'fov_loss' else COLORS['fov_boundary']
-        )
+        color = {
+            'success': COLORS['success'],
+            'fov_loss': COLORS['fail'],
+            'flight_envelope_violation': COLORS['envelope'],
+            'timeout': COLORS['fov_boundary'],
+        }.get(d['outcome'], COLORS['text'])
         ax_ecurves.plot(t, d['image_error'], color=color, alpha=0.4, lw=1)
     ax_ecurves.set_xlabel('Time [s]', color=COLORS['text'], fontsize=9)
     ax_ecurves.set_ylabel('Image Error ||p̄||', color=COLORS['text'], fontsize=9)
@@ -694,6 +716,7 @@ def create_summary_dashboard(all_data, config, save_path=None):
         ['Episodes', f'{n_episodes}'],
         ['Success Rate', f'{100*n_success/n_episodes:.1f}%'],
         ['FOV Loss Rate', f'{100*n_fov/n_episodes:.1f}%'],
+        ['Envelope Rate', f'{100*n_envelope/n_episodes:.1f}%'],
         ['Timeout Rate', f'{100*n_timeout/n_episodes:.1f}%'],
         ['', ''],
         ['Mean Final Dist', f'{np.mean(final_dists):.2f} ± {np.std(final_dists):.2f} m'],
@@ -749,7 +772,11 @@ def main():
         help='Path to saved SB3 model (without .zip)'
     )
     parser.add_argument(
-        '--config', type=str, default='config.yaml',
+        '--config', type=str,
+        default=str(
+            PROJECT_ROOT / 'configs' / 'canonical'
+            / 'fixed_camera_intercept_v1.yaml'
+        ),
         help='Path to config YAML file'
     )
     parser.add_argument(
@@ -791,10 +818,24 @@ def main():
     args = parser.parse_args()
 
     # --- Load config ---
-    with open(args.config, 'r') as f:
+    config_path = Path(args.config).expanduser()
+    if not config_path.is_absolute() and not config_path.exists():
+        config_path = PROJECT_ROOT / config_path
+    config_path = config_path.resolve()
+    with config_path.open('r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    if is_canonical_config_path(config_path) or is_canonical_config(config):
+        validate_canonical_config(config)
     paths = get_stage_paths(config, args.stage)
     model_path = args.model or default_model_path(paths)
+    if args.model and not Path(model_path).expanduser().is_absolute():
+        local_model = Path(model_path).expanduser()
+        local_model_exists = (
+            local_model.exists() or Path(f'{local_model}.zip').exists()
+        )
+        model_path = str(
+            local_model if local_model_exists else PROJECT_ROOT / local_model
+        )
 
     save_path = args.save
     if save_path is None and args.stage is not None:
@@ -810,7 +851,7 @@ def main():
     model = PPO.load(model_path)
 
     # --- Create environment ---
-    env = InterceptionEnv(config=config)
+    env = build_environment(config)
 
     # --- Collect episodes ---
     n_episodes = max(args.episodes, 1)
@@ -822,7 +863,12 @@ def main():
             deterministic=args.deterministic,
             seed=args.seed + i
         )
-        outcome_sym = {'success': '✓', 'fov_loss': '✖', 'timeout': '⏱'}.get(
+        outcome_sym = {
+            'success': '✓',
+            'fov_loss': '✖',
+            'flight_envelope_violation': '⚠',
+            'timeout': '⏱',
+        }.get(
             data['outcome'], '?'
         )
         print(f"  Episode {i+1}/{n_episodes}: {outcome_sym} {data['outcome']:<10s}  "

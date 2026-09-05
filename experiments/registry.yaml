@@ -1,0 +1,146 @@
+schema_version: 1
+
+# Experiment registry. PROJECT.md and the canonical YAML define scope; this
+# file records milestones and future comparisons. Historical stage folders are
+# evidence candidates, not canonical results, until their provenance is known.
+
+study:
+  id: fixed_camera_intercept_program
+  title: Fixed-camera agile drone interception development program
+  status: phase1_reproducibility_complete
+  research_spine: PROJECT.md
+  canonical_config: configs/canonical/fixed_camera_intercept_v1.yaml
+  primary_outcomes:
+    - interception_success
+    - fov_loss
+    - flight_envelope_violation
+    - timeout
+    - attitude_violation_severity
+    - attitude_violation_duration
+  secondary_outcomes:
+    - time_to_intercept
+    - minimum_range
+    - terminal_closure_rate
+    - control_effort
+    - control_jerk
+    - projection_active_fraction
+    - raw_safe_action_l2
+    - projection_residual
+    - projection_infeasible_rate
+    - inference_time
+
+protocol:
+  training_seeds: [7, 42, 123, 2026, 31415]
+  validation_suite: evaluation/suites/validation_v1.yaml
+  test_suite: evaluation/suites/test_v1.yaml
+  test_episodes_per_condition: 200
+  paired_scenarios: true
+  confidence_level: 0.95
+  checkpoint_rule:
+    independent_unit: training_seed
+    selected_checkpoints_per_seed: 1
+    selection_data: validation_only
+    precedence:
+      - satisfy_physical_safety_tolerance
+      - maximize_mean_interception_success
+      - minimize_projection_intervention
+      - prefer_earlier_checkpoint
+  reporting_rules:
+    - deterministic_and_stochastic_results_are_separate
+    - checkpoints_are_not_independent_samples
+    - validation_and_test_seeds_do_not_overlap
+    - every_result_has_config_git_and_model_hashes
+    - plots_and_tables_are_generated_from_episode_records
+
+phase1_outputs:
+  historical_inventory: docs/current/legacy_artifact_inventory.json
+  environment_builder: runtime/environment.py
+  seed_contract: runtime/seeding.py
+  run_manifest: runtime/manifest.py
+  episode_schema: evaluation/schema.py
+  evaluation_entrypoint: evaluate.py
+
+scenario_axes:
+  canonical_mvp:
+    sensing: [clean]
+    target_maneuver: [cruise, steady_turn, weave]
+    capability_profile: fixed_camera_intercept_v1
+  future_robustness:
+    sensing: [nominal, severe]
+    capability_sweep: planned
+
+experiments:
+  - id: development/clean_ppo_interception_mvp_v1
+    label: Clean PPO interception MVP on the frozen three-mode target
+    role: immediate_development_milestone
+    status: phase2_training_pending
+    config_path: configs/canonical/fixed_camera_intercept_v1.yaml
+
+  - id: thesis_v1/m0_classical_ibvs
+    label: Classical IBVS plus shared estimator
+    method_id: M0
+    role: classical_baseline
+    status: missing_implementation
+    config_path: null
+
+  - id: thesis_v1/m1_ppo
+    label: PPO without safety layer
+    method_id: M1
+    role: learned_guidance_baseline
+    status: planned_clean_rerun
+    config_path: null
+
+  - id: thesis_v1/m2_ppo_external_cbf
+    label: PPO with external proxy-CBF/QP filter
+    method_id: M2
+    role: action_filter_baseline
+    status: planned_clean_rerun
+    config_path: null
+
+  - id: thesis_v1/m3_ppo_hardnet_lambda0
+    label: PPO with in-policy projection and no feasibility loss
+    method_id: M3
+    role: projection_ablation
+    status: planned_clean_rerun
+    config_path: null
+
+  - id: thesis_v1/m4_ppo_hardnet_feasibility
+    label: PPO with in-policy projection and feasibility loss
+    method_id: M4
+    role: proposed_method
+    status: planned_clean_rerun
+    config_path: null
+
+legacy_evidence_candidates:
+  - id: legacy/ppo_noisy_mild
+    path: logs/stages/stage3b_noisy_mild
+    status: legacy_unverified
+
+  - id: legacy/external_cbf_locked
+    path: logs/stages/stage4a_hocbf_locked
+    status: legacy_unverified
+
+  - id: legacy/domain_randomized_external_cbf
+    path: logs/stages/stage4b_dr_finetune
+    status: legacy_unverified
+
+  - id: legacy/hardnet_feasibility_locked
+    path: logs/stages/stage4a_hardnet_d_locked
+    status: legacy_unverified
+
+exploratory_studies:
+  - id: operating_envelope/agility_ablation
+    path: experiments/legacy/agility_ablation.py
+    status: exploratory
+
+  - id: operating_envelope/lead_pursuit
+    path: experiments/legacy/lead_pursuit_eval.py
+    status: exploratory
+
+  - id: operating_envelope/lead_pursuit_retrain
+    path: experiments/legacy/lead_pursuit_retrain.py
+    status: exploratory
+
+  - id: operating_envelope/geometric_analysis
+    path: references/geometric_analysis.md
+    status: invalid_theory_requires_reformulation

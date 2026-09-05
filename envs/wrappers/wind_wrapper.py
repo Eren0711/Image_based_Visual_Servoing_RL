@@ -37,6 +37,7 @@ import numpy as np
 import gymnasium as gym
 
 from models.wind_model import WindModel
+from runtime.seeding import derive_seed
 
 
 class WindWrapper(gym.Wrapper):
@@ -92,6 +93,8 @@ class WindWrapper(gym.Wrapper):
             **(randomization_ranges or {}),
         }
         self._rand_rng = np.random.default_rng(seed)
+        self._last_randomization_seed = seed
+        self._last_process_seed = seed
         self.wind_model = WindModel(
             dt=dt, sigma=self.sigma, theta=self.theta,
             v_mean=self.v_mean, k_drag=self.k_drag, seed=seed,
@@ -160,10 +163,22 @@ class WindWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+        reset_seed = kwargs.get('seed')
+        if reset_seed is not None:
+            self._last_randomization_seed = derive_seed(
+                reset_seed, 'wind_domain_randomization'
+            )
+            self._rand_rng = np.random.default_rng(
+                self._last_randomization_seed
+            )
         self._maybe_randomize()
-        # Re-seed wind from kwargs if provided, else keep internal RNG state.
-        seed = kwargs.get('seed', None)
-        self.wind_model.reset(seed=seed)
+        wind_seed = (
+            derive_seed(reset_seed, 'wind_process')
+            if reset_seed is not None else None
+        )
+        if wind_seed is not None:
+            self._last_process_seed = wind_seed
+        self.wind_model.reset(seed=wind_seed)
         info = dict(info) if info is not None else {}
         info['wind'] = {
             'v_wind': self.wind_model.v_wind.tolist(),
@@ -171,6 +186,10 @@ class WindWrapper(gym.Wrapper):
             'theta': self.wind_model.theta,
             'k_drag': self.wind_model.k_drag,
         }
+        info.setdefault('seed_bundle', {}).update({
+            'wind_domain_randomization': self._last_randomization_seed,
+            'wind_process': self._last_process_seed,
+        })
         return obs, info
 
     def step(self, action):

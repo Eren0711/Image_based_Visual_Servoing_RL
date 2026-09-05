@@ -11,6 +11,9 @@ logs/
 venv/
 .env
 *.pdf
+build/
+dist/
+*.egg-info/
 
 # --- Report exceptions (track compiled PDFs + figures) ---
 # Report PDFs and PNG figures are deliverables; GIFs stay ignored (large),
@@ -69,3 +72,14 @@ logs/stages/stage3a/*
 # Presentation bundle build artifacts (regenerate via build_bundle.sh)
 presentation_html/_bundle/
 presentation_html/*.zip
+figures/
+references/learning_roadmap.tex
+references/learning_en_tex.tex
+references/report.bib
+references/report.tex
+references/learning_roadmap_en.tex
+
+# Canonical run artifacts (models, TensorBoard, manifests, episode records)
+!artifacts/
+artifacts/*
+!artifacts/README.md

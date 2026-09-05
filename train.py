@@ -1,11 +1,12 @@
-"""PPO Training Script — Stages 1-2b
-===================================
-Trains a PPO agent on the IBVS Drone Interception environment using
-Stable-Baselines3.
+"""Manifest-backed PPO training entry point.
+
+Trains a PPO agent on the fixed-camera drone-interception environment using
+Stable-Baselines3. The frozen canonical configuration is the default; legacy
+and exploratory options remain available only when selected explicitly.
 
 Usage:
-    python train.py                          # default config
-    python train.py --config custom.yaml     # custom config
+    python train.py                          # frozen canonical config
+    python train.py --config custom.yaml     # explicit alternate config
     python train.py --timesteps 2000000      # override timesteps
     python train.py --noise-delay --dkf      # Stage 2b with wrappers
 
@@ -14,11 +15,15 @@ Features:
     - TensorBoard logging of training metrics
     - Custom callback for episode outcome tracking
     - Periodic model checkpointing
-    - Optional noise/delay + DKF wrappers (Stage 2b)
+    - Optional historical sensing, disturbance, and safety wrappers
+    - Immutable output directories with resolved configs and run manifests
 """
 
-import os
+import atexit
 import argparse
+import sys
+from pathlib import Path
+
 import yaml
 import numpy as np
 from collections import deque
@@ -28,14 +33,23 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import (
     BaseCallback, CheckpointCallback, CallbackList
 )
-from stable_baselines3.common.logger import configure
+from experiment_paths import ensure_stage_dirs, get_run_paths
+from project_config import (
+    active_scope_overrides,
+    is_canonical_config,
+    is_canonical_config_path,
+    validate_canonical_config,
+)
+from runtime.environment import EnvironmentOptions, make_environment_factory
+from runtime.manifest import finalize_manifest, initialize_run_manifest
+from runtime.seeding import derive_seed, seed_everything
 
-from envs.interception_env import InterceptionEnv
-from experiment_paths import get_stage_paths, ensure_stage_dirs
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 class DeterministicEvalCallback(BaseCallback):
-    """Run N deterministic eval episodes every M training steps.
+    """Run deterministic validation scenarios every M training steps.
 
     Why this exists: `InterceptionMetricsCallback` logs outcomes from the
     *stochastic* training rollouts, which over-report success because PPO's
@@ -43,17 +57,20 @@ class DeterministicEvalCallback(BaseCallback):
     task deterministically. Stage 3a-v1 showed a 15× gap (30% stochastic vs
     2% deterministic) that went unnoticed for 15M steps. This callback runs
     a real deterministic eval on a fresh env and logs `eval/det_*` so the
-    gap is visible in TensorBoard.
+    gap is visible in TensorBoard. Canonical runs interpret N as paired seeds
+    and run each seed once for every frozen target mode.
     """
 
     def __init__(self, eval_env_fn, eval_freq: int = 1_000_000,
                  n_eval_episodes: int = 20, seed_base: int = 10_000,
+                 target_modes=None,
                  verbose: int = 0):
         super().__init__(verbose)
         self.eval_env_fn = eval_env_fn
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
         self.seed_base = seed_base
+        self.target_modes = list(target_modes) if target_modes else None
         self._last_eval_step = 0
         self._eval_env = None
 
@@ -68,7 +85,17 @@ class DeterministicEvalCallback(BaseCallback):
         outcomes = []
         distances = []
         image_errors = []
-        for i in range(self.n_eval_episodes):
+        scenarios = [
+            (i, mode)
+            for i in range(self.n_eval_episodes)
+            for mode in (self.target_modes or [None])
+        ]
+        outcomes_by_mode = {
+            mode: [] for mode in (self.target_modes or [])
+        }
+        for i, mode in scenarios:
+            if mode is not None:
+                self._eval_env.unwrapped.set_target_modes([mode])
             obs, info = self._eval_env.reset(seed=self.seed_base + i)
             ep_img_err = []
             done = False
@@ -78,6 +105,10 @@ class DeterministicEvalCallback(BaseCallback):
                 ep_img_err.append(info.get('image_error', 0.0))
                 done = terminated or truncated
             outcomes.append(info.get('episode_outcome', 'unknown'))
+            if mode is not None:
+                outcomes_by_mode[mode].append(
+                    info.get('episode_outcome', 'unknown')
+                )
             distances.append(info.get('relative_distance', float('nan')))
             image_errors.append(float(np.mean(ep_img_err)) if ep_img_err else 0.0)
 
@@ -85,20 +116,36 @@ class DeterministicEvalCallback(BaseCallback):
         n_success = sum(1 for o in outcomes if o == 'success')
         n_fov = sum(1 for o in outcomes if o == 'fov_loss')
         n_timeout = sum(1 for o in outcomes if o == 'timeout')
+        n_envelope = sum(
+            1 for o in outcomes if o == 'flight_envelope_violation'
+        )
 
         self.logger.record('eval/det_success_rate', n_success / n)
         self.logger.record('eval/det_fov_loss_rate', n_fov / n)
         self.logger.record('eval/det_timeout_rate', n_timeout / n)
+        self.logger.record('eval/det_envelope_violation_rate', n_envelope / n)
         self.logger.record('eval/det_mean_distance', float(np.mean(distances)))
         self.logger.record('eval/det_mean_image_error', float(np.mean(image_errors)))
+        for mode, mode_outcomes in outcomes_by_mode.items():
+            self.logger.record(
+                f'eval/by_mode/{mode}_success_rate',
+                sum(outcome == 'success' for outcome in mode_outcomes)
+                / len(mode_outcomes),
+            )
 
         if self.verbose:
             print(f"  [det-eval @ {self.num_timesteps:,} steps] "
                   f"success={n_success}/{n} ({100*n_success/n:.0f}%)  "
-                  f"fov={n_fov}/{n}  timeout={n_timeout}/{n}  "
+                  f"fov={n_fov}/{n}  envelope={n_envelope}/{n}  "
+                  f"timeout={n_timeout}/{n}  "
                   f"mean_dist={np.mean(distances):.1f}m")
 
         return True
+
+    def _on_training_end(self) -> None:
+        if self._eval_env is not None:
+            self._eval_env.close()
+            self._eval_env = None
 
 
 class CurriculumCallback(BaseCallback):
@@ -260,6 +307,13 @@ class InterceptionMetricsCallback(BaseCallback):
             timeout_rate = n_timeout / len(recent)
             self.logger.record('custom/timeout_rate', timeout_rate)
 
+            n_envelope = sum(
+                1 for o in recent if o == 'flight_envelope_violation'
+            )
+            self.logger.record(
+                'custom/envelope_violation_rate', n_envelope / len(recent)
+            )
+
             # Mean image error (last episodes)
             recent_errors = self.episode_image_errors[-self.window_size:]
             self.logger.record(
@@ -280,7 +334,19 @@ class InterceptionMetricsCallback(BaseCallback):
         return True
 
 
-def load_config(config_path: str) -> dict:
+def resolve_input_path(path: str | Path, *, allow_zip_suffix: bool = False) -> Path:
+    """Resolve inputs from either the caller directory or repository root."""
+    candidate = Path(path).expanduser()
+    candidate_zip_exists = (
+        allow_zip_suffix and Path(f"{candidate}.zip").is_file()
+    )
+    if candidate.is_absolute() or candidate.exists() or candidate_zip_exists:
+        return candidate.resolve()
+    repository_candidate = PROJECT_ROOT / candidate
+    return repository_candidate.resolve()
+
+
+def load_config(config_path: str | Path) -> dict:
     """Load configuration from YAML file.
 
     Args:
@@ -289,7 +355,7 @@ def load_config(config_path: str) -> dict:
     Returns:
         dict: parsed configuration.
     """
-    with open(config_path, 'r') as f:
+    with Path(config_path).open('r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
@@ -313,90 +379,23 @@ def make_env(config: dict, use_noise_delay: bool = False, use_dkf: bool = False,
     Returns:
         Callable that creates a new environment instance.
     """
-    def _init():
-        env = InterceptionEnv(config=config)
-
-        # Stage 4b: wind and intermittent detection sit between the env and
-        # NoiseDelay so the existing delay buffer sees the post-miss in_fov
-        # flag. Order: env → Wind → IntermittentDet → NoiseDelay → DKF → CBF.
-        if use_wind:
-            from envs.wrappers.wind_wrapper import WindWrapper
-            wind_cfg = config.get('stage4b', {}).get('wind', {})
-            env = WindWrapper(
-                env,
-                sigma=wind_cfg.get('sigma', 1.0),
-                theta=wind_cfg.get('theta', 0.5),
-                k_drag=wind_cfg.get('k_drag', 0.1),
-                randomize_per_episode=domain_randomize,
-                randomization_ranges=wind_cfg.get('randomization_ranges', None),
-            )
-
-        if use_intermittent_det:
-            from envs.wrappers.intermittent_detection_wrapper import \
-                IntermittentDetectionWrapper
-            det_cfg = config.get('stage4b', {}).get('detection', {})
-            env = IntermittentDetectionWrapper(
-                env,
-                beta_1=det_cfg.get('beta_1', 8.0),
-                beta_2=det_cfg.get('beta_2', 4.0),
-                beta_3=det_cfg.get('beta_3', 1.0),
-                sigma_base=det_cfg.get('sigma_base', 0.0),
-                sigma_slope=det_cfg.get('sigma_slope', 0.0005),
-                randomize_per_episode=domain_randomize,
-                randomization_ranges=det_cfg.get('randomization_ranges', None),
-            )
-
-        if use_noise_delay:
-            from envs.wrappers.noise_delay_wrapper import NoiseDelayWrapper
-            nd_cfg = config.get('noise_delay', {})
-            env = NoiseDelayWrapper(
-                env,
-                delay=nd_cfg.get('delay', 3),
-                sigma_noise=nd_cfg.get('sigma_noise', 0.03),
-            )
-
-        if use_dkf:
-            from envs.wrappers.dkf_wrapper import DKFWrapper
-            dkf_cfg = config.get('dkf', {})
-            nd_cfg = config.get('noise_delay', {})
-            env = DKFWrapper(
-                env,
-                delay=nd_cfg.get('delay', 3),
-                dt=config['interceptor']['dt'],
-                sigma_pos_process=dkf_cfg.get('sigma_pos_process', 0.01),
-                sigma_vel_process=dkf_cfg.get('sigma_vel_process', 0.5),
-                sigma_measurement=dkf_cfg.get('sigma_measurement', 0.03),
-                use_imu=use_imu_dkf,
-            )
-
-        if use_cbf:
-            from envs.wrappers.cbf_wrapper import CBFWrapper
-            env = CBFWrapper(
-                env,
-                method=cbf_method,
-                alpha_fov=cbf_alpha_fov,
-                alpha_attitude=cbf_alpha_att,
-                horizon_fov=cbf_horizon_fov,
-                horizon_attitude=cbf_horizon_att,
-                attitude_safety_margin=cbf_safety_margin,
-                in_fov_only=True,
-            )
-
-        # Stage 4a Phase 4 (HardNet): append CBF (A, b) coefficients to the
-        # observation so the in-policy differentiable projection can consume
-        # them. Mutually exclusive with the external CBF filter (use_cbf):
-        # the projection replaces the filter. Must be the OUTERMOST wrapper.
-        if use_cbf_context:
-            from envs.wrappers.cbf_context_wrapper import CBFContextWrapper
-            env = CBFContextWrapper(
-                env,
-                alpha_fov=cbf_alpha_fov,
-                alpha_attitude=cbf_alpha_att,
-                attitude_safety_margin=cbf_safety_margin,
-            )
-
-        return env
-    return _init
+    options = EnvironmentOptions(
+        use_noise_delay=use_noise_delay,
+        use_dkf=use_dkf,
+        use_imu_dkf=use_imu_dkf,
+        use_cbf=use_cbf,
+        cbf_method=cbf_method,
+        cbf_alpha_fov=cbf_alpha_fov,
+        cbf_alpha_att=cbf_alpha_att,
+        cbf_horizon_fov=cbf_horizon_fov,
+        cbf_horizon_att=cbf_horizon_att,
+        cbf_safety_margin=cbf_safety_margin,
+        use_wind=use_wind,
+        use_intermittent_detection=use_intermittent_det,
+        domain_randomize=domain_randomize,
+        use_cbf_context=use_cbf_context,
+    )
+    return make_environment_factory(config, options)
 
 
 def main():
@@ -405,12 +404,18 @@ def main():
         description='Train PPO agent for IBVS drone interception'
     )
     parser.add_argument(
-        '--config', type=str, default='config.yaml',
+        '--config', type=str,
+        default='configs/canonical/fixed_camera_intercept_v1.yaml',
         help='Path to configuration YAML file'
     )
     parser.add_argument(
         '--stage', type=str, default=None,
         help='Experiment stage name for outputs (default: config experiment.stage)'
+    )
+    parser.add_argument(
+        '--run-id', type=str, default=None,
+        help='Optional unique run directory name. By default a stage/seed/UTC '
+             'identifier is generated; existing run directories are refused.'
     )
     parser.add_argument(
         '--timesteps', type=int, default=None,
@@ -422,7 +427,8 @@ def main():
     )
     parser.add_argument(
         '--resume', type=str, default=None,
-        help='Path to a saved model to resume training from'
+        help='Checkpoint used as a warm start. The new run receives a fresh '
+             'directory and the requested seed; this is not bit-exact resume.'
     )
     parser.add_argument(
         '--noise-delay', action='store_true', default=False,
@@ -435,9 +441,8 @@ def main():
     parser.add_argument(
         '--no-imu-dkf', action='store_true', default=False,
         help='Disable IMU-aware DKF prediction (B-minimal upgrade). '
-             'Use this for ablation: --dkf alone uses the constant-velocity '
-             'DKF; --dkf --no-imu-dkf forces the legacy behavior; '
-             '--dkf with IMU prediction is the default new behavior.'
+             'The default --dkf path uses IMU prediction; this flag forces '
+             'the legacy constant-velocity behavior for ablation.'
     )
     parser.add_argument(
         '--cbf', action='store_true', default=False,
@@ -489,9 +494,9 @@ def main():
         help='Linear LR decay from initial value to 0 over training'
     )
     parser.add_argument(
-        '--seed', type=int, default=None,
+        '--seed', type=int, default=42,
         help='Master seed for reproducible runs (PPO init + vec_env). '
-             'Used for multi-seed variance studies; None = nondeterministic.'
+             'Every canonical run records it in the manifest (default: 42).'
     )
     parser.add_argument(
         '--hardnet', action='store_true', default=False,
@@ -539,21 +544,44 @@ def main():
         '--curriculum-advance', type=float, default=0.6,
         help='Rolling success threshold to unlock the next maneuver level.'
     )
+    parser.add_argument(
+        '--allow-scope-override', action='store_true', default=False,
+        help='Explicitly allow CLI options outside frozen canonical MVP scope. '
+             'Use only for a named exploratory experiment.'
+    )
     args = parser.parse_args()
 
     # --- Load config ---
-    config = load_config(args.config)
+    config_path = resolve_input_path(args.config)
+    config = load_config(config_path)
+    canonical_run = (
+        is_canonical_config_path(config_path) or is_canonical_config(config)
+    )
+    if canonical_run:
+        validate_canonical_config(config)
+        scope_overrides = active_scope_overrides(args)
+        if scope_overrides and not args.allow_scope_override:
+            raise SystemExit(
+                'Frozen canonical MVP scope would be changed by: '
+                + ', '.join(scope_overrides)
+                + '. Use a separate exploratory config, or acknowledge the '
+                  'departure with --allow-scope-override.'
+            )
     train_cfg = config['training']
-    paths = get_stage_paths(config, args.stage)
-
-    total_timesteps = args.timesteps or train_cfg['total_timesteps']
-    n_envs = args.n_envs or train_cfg['n_envs']
-    log_dir = str(paths['tensorboard'])
-    save_dir = str(paths['models'])
+    total_timesteps = (
+        train_cfg['total_timesteps']
+        if args.timesteps is None else args.timesteps
+    )
+    n_envs = train_cfg['n_envs'] if args.n_envs is None else args.n_envs
+    if total_timesteps <= 0:
+        raise SystemExit('--timesteps must be positive')
+    if n_envs <= 0:
+        raise SystemExit('--n-envs must be positive')
+    if args.seed < 0 or args.seed + n_envs > 2**32:
+        raise SystemExit(
+            '--seed must leave every vector-worker seed in uint32 range'
+        )
     checkpoint_freq = train_cfg.get('checkpoint_freq', 50000)
-
-    # --- Create directories ---
-    ensure_stage_dirs(paths, 'tensorboard', 'models')
 
     # --- Create vectorized environment ---
     use_noise_delay = args.noise_delay
@@ -605,9 +633,11 @@ def main():
     print(f"Creating {n_envs} parallel environments...")
     if wrapper_str:
         print(f"  Wrappers:\n{wrapper_str}")
-    env_kwargs = dict(
-        use_noise_delay=use_noise_delay, use_dkf=use_dkf,
-        use_imu_dkf=use_imu_dkf, use_cbf=use_cbf,
+    environment_options = EnvironmentOptions(
+        use_noise_delay=use_noise_delay,
+        use_dkf=use_dkf,
+        use_imu_dkf=use_imu_dkf,
+        use_cbf=use_cbf,
         cbf_method=args.cbf_method,
         cbf_alpha_fov=args.cbf_alpha_fov,
         cbf_alpha_att=args.cbf_alpha_att,
@@ -615,12 +645,88 @@ def main():
         cbf_horizon_att=args.cbf_horizon_att,
         cbf_safety_margin=args.cbf_safety_margin,
         use_wind=use_wind,
-        use_intermittent_det=use_intermittent_det,
+        use_intermittent_detection=use_intermittent_det,
         domain_randomize=domain_randomize,
         use_cbf_context=use_hardnet,
     )
+    environment_options.validate()
+    environment_factory = make_environment_factory(config, environment_options)
+
+    # Every new run gets an immutable directory and enough provenance to
+    # distinguish it from historical stage folders that lack manifests.
+    process_seed_state = seed_everything(args.seed)
+    seed_namespaces = ['target_guidance']
+    if environment_options.use_noise_delay:
+        seed_namespaces.append('noise_delay')
+    if environment_options.use_wind:
+        seed_namespaces.extend(
+            ['wind_domain_randomization', 'wind_process']
+        )
+    if environment_options.use_intermittent_detection:
+        seed_namespaces.append('intermittent_detection')
+    worker_seed_bundles = []
+    for worker_index in range(n_envs):
+        worker_seed = int(args.seed + worker_index)
+        worker_seed_bundles.append({
+            'worker_index': worker_index,
+            'initial_reset_seed': worker_seed,
+            'derived_streams': {
+                namespace: derive_seed(worker_seed, namespace)
+                for namespace in seed_namespaces
+            },
+        })
+    paths = get_run_paths(
+        config,
+        seed=args.seed,
+        run_id=args.run_id,
+        stage_arg=args.stage,
+    )
+    log_dir = str(paths['tensorboard'])
+    save_dir = str(paths['models'])
+    resume_path = (
+        resolve_input_path(args.resume, allow_zip_suffix=True)
+        if args.resume else None
+    )
+    manifest_path = initialize_run_manifest(
+        paths['run_dir'],
+        run_id=paths['run_id'],
+        run_kind='training',
+        config=config,
+        seed=args.seed,
+        command=[sys.executable, *sys.argv],
+        runtime_options={
+            'environment': environment_options.to_dict(),
+            'active_components': environment_options.active_components(),
+            'process_seed_state': process_seed_state,
+            'seed_plan': {
+                'derivation': 'sha256:ibvs-interceptor-v1:<seed>:<namespace>',
+                'workers': worker_seed_bundles,
+                'subsequent_resets': 'continue_each_worker_rng_stream',
+            },
+            'canonical_scope': canonical_run,
+            'scope_override_acknowledged': bool(args.allow_scope_override),
+            'total_timesteps': int(total_timesteps),
+            'n_envs': int(n_envs),
+        },
+        source_config=config_path,
+        source_model=resume_path,
+    )
+    manifest_state = {'finalized': False}
+
+    def _finalize_failed_run() -> None:
+        if not manifest_state['finalized']:
+            try:
+                finalize_manifest(manifest_path, status='failed')
+            except Exception:
+                # Never hide the original training failure during interpreter
+                # shutdown merely because provenance finalization also failed.
+                pass
+
+    atexit.register(_finalize_failed_run)
+    ensure_stage_dirs(paths, 'tensorboard', 'models')
+
     vec_env = make_vec_env(
-        make_env(config, **env_kwargs),
+        environment_factory,
         n_envs=n_envs,
         seed=args.seed,
     )
@@ -686,9 +792,9 @@ def main():
         else:
             print("Creating PPO with HardNet (in-policy CBF projection)...")
             model = PPO(**ppo_kwargs)
-        if args.resume:
-            print(f"  Warm-starting HardNet from: {args.resume}")
-            base_model = PPO.load(args.resume, device=model.device)
+        if resume_path:
+            print(f"  Warm-starting HardNet from: {resume_path}")
+            base_model = PPO.load(str(resume_path), device=model.device)
             # The MLP / action_net / value_net / log_std see only the 16-D
             # base obs (via the slicing extractor), so their shapes match the
             # vanilla policy exactly. features_extractor has no params in
@@ -705,12 +811,17 @@ def main():
             model.policy.load_state_dict(tgt, strict=False)
             print(f"  Warm-start copied {len(copied)} param tensors, "
                   f"skipped {len(skipped)}: {skipped}")
-    elif args.resume:
-        print(f"Resuming training from: {args.resume}")
+    elif resume_path:
+        print(f"Warm-starting training state from: {resume_path}")
         # Override tensorboard_log explicitly — PPO.load restores the original
         # path from the saved model, which sends fine-tune runs to the parent
         # stage's TB folder. Without this, --stage on the CLI is ignored for TB.
-        model = PPO.load(args.resume, env=vec_env, tensorboard_log=log_dir)
+        model = PPO.load(
+            str(resume_path),
+            env=vec_env,
+            tensorboard_log=log_dir,
+            seed=args.seed,
+        )
         # Also override learning rate if --lr-decay is set (otherwise the
         # restored model keeps its original constant LR).
         if args.lr_decay:
@@ -735,6 +846,11 @@ def main():
             tensorboard_log=log_dir,
         )
 
+    # Loading a checkpoint restores its historical RNG configuration. Reapply
+    # the requested run seed so a warm-start cannot silently override it.
+    seed_everything(args.seed)
+    model.set_random_seed(args.seed)
+
     # --- Set up callbacks ---
     metrics_callback = InterceptionMetricsCallback(
         window_size=100, verbose=0
@@ -747,9 +863,13 @@ def main():
         save_vecnormalize=False,
     )
     det_eval_callback = DeterministicEvalCallback(
-        eval_env_fn=make_env(config, **env_kwargs),
+        eval_env_fn=environment_factory,
         eval_freq=train_cfg.get('eval_freq', 1_000_000),
         n_eval_episodes=train_cfg.get('eval_n_episodes', 20),
+        seed_base=config.get('evaluation', {}).get('seed_base', 10_000),
+        target_modes=(
+            config['target']['maneuver_modes'] if canonical_run else None
+        ),
         verbose=1,
     )
     callbacks = [metrics_callback, checkpoint_callback, det_eval_callback]
@@ -770,6 +890,8 @@ def main():
     print(f"{'='*60}")
     print(f"  Total timesteps : {total_timesteps:,}")
     print(f"  Stage           : {paths['stage']}")
+    print(f"  Run ID          : {paths['run_id']}")
+    print(f"  Master seed     : {args.seed}")
     print(f"  Parallel envs   : {n_envs}")
     print(f"  Policy           : {train_cfg['policy']}")
     print(f"  Learning rate    : {lr_desc}")
@@ -778,15 +900,22 @@ def main():
     print(f"  Save directory   : {save_dir}")
     print(f"{'='*60}\n")
 
-    model.learn(
-        total_timesteps=total_timesteps,
-        callback=callback,
-        progress_bar=True,
-    )
+    try:
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=callback,
+            progress_bar=True,
+        )
+    except KeyboardInterrupt:
+        vec_env.close()
+        finalize_manifest(manifest_path, status='interrupted')
+        manifest_state['finalized'] = True
+        atexit.unregister(_finalize_failed_run)
+        raise
 
     # --- Save final model ---
-    final_path = os.path.join(save_dir, 'ibvs_ppo_final')
-    model.save(final_path)
+    final_path = paths['models'] / 'ibvs_ppo_final'
+    model.save(str(final_path))
     print(f"\nFinal model saved to: {final_path}")
 
     # --- Print training summary ---
@@ -796,6 +925,9 @@ def main():
         n_success = sum(1 for o in outcomes if o == 'success')
         n_fov = sum(1 for o in outcomes if o == 'fov_loss')
         n_timeout = sum(1 for o in outcomes if o == 'timeout')
+        n_envelope = sum(
+            1 for o in outcomes if o == 'flight_envelope_violation'
+        )
 
         print(f"\n{'='*60}")
         print(f"  Training Summary")
@@ -803,6 +935,8 @@ def main():
         print(f"  Total episodes   : {n_total}")
         print(f"  Success          : {n_success} ({100*n_success/n_total:.1f}%)")
         print(f"  FOV loss         : {n_fov} ({100*n_fov/n_total:.1f}%)")
+        print(f"  Envelope failure : {n_envelope} "
+              f"({100*n_envelope/n_total:.1f}%)")
         print(f"  Timeout          : {n_timeout} ({100*n_timeout/n_total:.1f}%)")
 
         # Last 100 episodes
@@ -813,6 +947,25 @@ def main():
         print(f"{'='*60}")
 
     vec_env.close()
+    outcome_counts = {
+        outcome: outcomes.count(outcome)
+        for outcome in sorted(set(outcomes))
+    }
+    finalize_manifest(
+        manifest_path,
+        status='complete',
+        output_model=final_path,
+        extra={
+            'training_result': {
+                'model_num_timesteps': int(model.num_timesteps),
+                'episodes_observed': len(outcomes),
+                'outcome_counts': outcome_counts,
+                'checkpoint_selection': 'final_training_state',
+            }
+        },
+    )
+    manifest_state['finalized'] = True
+    atexit.unregister(_finalize_failed_run)
 
 
 if __name__ == '__main__':

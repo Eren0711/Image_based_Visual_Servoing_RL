@@ -1,210 +1,199 @@
-# RL-Guided High-Speed Drone Interception via Image-Based Visual Servoing (IBVS)
+# Safe RL for Fixed-Camera Agile Drone Interception
 
-This repository implements a high-fidelity **Gymnasium simulation environment** and **Reinforcement Learning (PPO)** agent for high-speed drone interception using **Image-Based Visual Servoing (IBVS)**. 
+This repository studies whether a quadrotor with a rigid, forward-facing
+monocular camera can learn image-guided interception of an aggressively
+maneuvering drone while maintaining visual lock and respecting flight-envelope
+constraints.
 
-The project is inspired by the research paper:  
-> **"High-Speed Interception Multicopter Control by Image-based Visual Servoing"**  
-> *Yang, Bai, She, and Quan (arXiv:2404.08296)*
+The project is a **simulation research prototype entering its clean-MVP phase**. It
+already contains a working PPO/Gymnasium pipeline, camera and estimator models,
+6-DOF-lite dynamics, synthetic sensing and wind disturbances, external CBF
+filtering, differentiable in-policy projection, and multi-seed exploratory
+experiments. Phase 1 now provides reproducible run/evaluation infrastructure,
+but the project is not yet a publication-grade result set or a real-drone
+capture system.
 
-Instead of relying on classical geometric control laws, this framework trains a deep reinforcement learning agent (using **Stable-Baselines3**) to intercept a highly maneuverable target drone directly from 2D visual tracking errors on the onboard camera's image plane.
+The canonical research question, claim boundaries, experiment matrix, and
+roadmap live in **[PROJECT.md](PROJECT.md)**. Read that document before using
+historical plans or result notes.
+The completed consolidation audit is summarized in
+**[docs/current/phase1_completion.md](docs/current/phase1_completion.md)**.
 
----
+The frozen executable system definition is
+**[`configs/canonical/fixed_camera_intercept_v1.yaml`](configs/canonical/fixed_camera_intercept_v1.yaml)**.
+Historical configurations now live under `configs/legacy/`; neither defines
+the current task.
 
-## 🗺️ Coordinate Systems & Architecture
+## Research question
 
-The simulator utilizes a physical **NED (North-East-Down)** coordinate convention (where the $z$-axis points downwards). There are three primary reference frames:
-1. **Earth-Fixed Coordinate System (EFCS)**: The global inertial reference frame.
-2. **Body Coordinate System (BCS)**: Attached to the center of mass of the interceptor drone.
-3. **Camera Coordinate System (CCS)**: Attached to the camera optical center. 
-   - *Default Mounting Configuration*: A forward-looking camera aligned with the body $x$-axis. This maps the body frame to the camera frame (body $x$ $\rightarrow$ camera optical axis $z$, body $y$ $\rightarrow$ camera $x$ image right, body $z$ $\rightarrow$ camera $y$ image down).
+> Under what target maneuvers, sensing conditions, initial geometries, and
+> relative vehicle capabilities can a fixed-camera interceptor learn safe
+> image-guided interception, and how does the safety architecture affect both
+> performance and learnability?
 
-```
-          [ Body x-axis (Forward) ] ──> Camera optical axis (z-axis)
-                        │
-      [ Body y-axis (Right) ] ──> Camera x-axis (Image-plane Right)
-                        │
-      [ Body z-axis (Down) ] ──> Camera y-axis (Image-plane Down)
-```
+The broad question is intended for a master's thesis. A possible later paper
+would be narrower: feasibility-regularized differentiable safety projection
+for PPO interception.
 
----
+## What the current system is
 
-## 📁 Repository Structure
+- A constrained, partially observed reach-avoid simulation.
+- A fixed forward camera with image-plane target measurements.
+- Image-guided state-based RL using visual features, estimated depth, and
+  interceptor proprioception.
+- Body-frame acceleration and yaw-rate guidance commands.
+- Kinematic and 6-DOF-lite interceptor dynamics.
+- Point-mass and 6-DOF-lite target models with multiple maneuver families.
+- Optional noise, delay, missed detections, DKF filtering, and wind.
+- Reward-only PPO, external proxy-CBF filtering, and in-policy differentiable
+  projection with an optional feasibility loss.
 
-```filepath
-├── config.yaml            # Centralized system and training configuration
-├── requirements.txt       # Python package dependencies
-├── train.py               # Vectorized PPO training script
-├── eval.py                # Static evaluation & multi-panel metrics analyzer
-├── visualize.py           # Animated 4-panel episode player & summary dashboard
-├── envs/
-│   ├── __init__.py
-│   └── interception_env.py# Custom Gymnasium environment mapping dynamics & rewards
-└── models/
-    ├── __init__.py
-    ├── drone_dynamics.py  # Kinematic model of the interceptor
-    ├── camera_model.py    # Pinhole projection and FOV boundaries
-    └── target_model.py    # Target drone with 4 distinct flight profiles
-```
+Those alternatives remain in the repository for history and later studies.
+Canonical v1 fixes both vehicles to the 6-DOF-lite model, uses only
+`cruise`/`steady_turn`/`weave`, and starts with clean PPO without a safety
+layer.
 
-### Stage-Based Output Layout
-Training artifacts are organized by experiment stage so that results from
-Stage 1a, Stage 1b, Stage 2a, and later stages can be compared later:
+## What it is not yet
 
-```filepath
-logs/stages/
-├── stage1a/
-│   ├── models/
-│   ├── tensorboard/
-│   ├── eval/
-│   ├── videos/
-│   └── depth_test/
-└── stage1b/
-    ├── models/
-    ├── tensorboard/
-    ├── eval/
-    ├── videos/
-    └── depth_test/
-```
+- End-to-end raw-image learning or detector training.
+- A certified safety controller for the true 6-DOF dynamics.
+- A hardware/HITL-validated interception system.
+- A physical contact or capture model.
+- Evidence that every FPV target can be intercepted.
+- Proof that fixed-camera equal-agility interception is impossible.
 
----
+## Repository superset architecture
 
-## ⚙️ Installation & Setup
-
-### 1. Environment Creation (with Conda/Miniconda)
-Create and activate a clean Python 3.10 environment:
-```bash
-conda create -n ibvs_rl python=3.10 -y
-conda activate ibvs_rl
-```
-
-### 2. Dependency Installation
-Install all core libraries, including Stable-Baselines3, PyYAML, Gymnasium, and visualization utilities:
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Install FFmpeg (Optional but Recommended)
-To save high-quality MP4/GIF animations of drone trajectories, make sure `ffmpeg` is installed:
-```bash
-# macOS (using Homebrew)
-brew install ffmpeg
-
-# Linux (Debian/Ubuntu)
-sudo apt update && sudo apt install ffmpeg -y
+```text
+target + interceptor dynamics
+          |
+          v
+fixed pinhole camera
+          |
+          v
+noise / delay / missed detections
+          |
+          v
+DKF + depth estimation
+          |
+          +--------------------+
+          |                    |
+          v                    v
+      PPO policy         CBF context
+          |                    |
+          +------ safety ------+
+                    |
+                    v
+       body acceleration + yaw-rate command
 ```
 
----
+The HardNet path augments the 16-D base observation with 20 affine proxy-CBF
+coefficients. Those coefficients are computed by a privileged safety
+supervisor; this distinction matters when interpreting "vision-based" claims.
+All disturbance, DKF and safety branches in this diagram are disabled in the
+canonical clean MVP profile.
 
-## 🚀 Execution & Usage Guide
+## Repository guide
 
-### 1. Training the Agent (`train.py`)
-Trains a PPO agent across multiple vectorized environments using the hyperparameter profile specified in `config.yaml`.
+| Path | Role |
+|---|---|
+| `PROJECT.md` | Canonical research plan and claim ledger |
+| `configs/canonical/fixed_camera_intercept_v1.yaml` | Frozen v1 system/task contract |
+| `experiments/registry.yaml` | Experiment status and future comparison protocol |
+| `train.py` | Current PPO/HardNet training entry point |
+| `evaluate.py`, `evaluation/` | Paired seed-locked evaluator, schemas and suites |
+| `runtime/` | Shared environment builder, seed derivation and run manifests |
+| `envs/` | Interception environment and sensing/safety wrappers |
+| `models/` | Camera, target, interceptor, wind, and attitude models |
+| `observers/` | Interaction matrix, depth estimator, and DKF |
+| `safety/` | Proxy-CBF, QP filtering, Dykstra projection, and HardNet PPO |
+| `experiments/legacy/` | Exploratory agility and lead-pursuit studies |
+| `scripts/` | Diagnostics plus clearly separated historical tools |
+| `docs/current/` | Current structure and audited legacy-artifact inventory |
+| `docs/legacy/`, `docs/archive/` | Preliminary studies, raw text and old plans |
+| `results/` | Exploratory episode-level outputs and figures |
+| `report/` | Master report and journal-paper drafts |
+| `configs/legacy/` | Preserved Stage 3/4 and equal-capability configurations |
 
-```bash
-# Train using the default config.yaml
-python train.py
+## Current scientific status
 
-# Train and save outputs under logs/stages/stage1a/
-python train.py --stage stage3a --timesteps 15000000 --n-envs 16
+| Component | State |
+|---|---|
+| Gymnasium/PPO/6-DOF-lite pipeline | Implemented |
+| DKF, depth, noise, delay, dropout, and wind | Implemented |
+| External proxy-CBF and in-policy projection | Implemented |
+| Feasibility-loss and lambda ablations | Preliminary experiments completed |
+| Classical IBVS controller under the same interface | Missing |
+| Canonical evaluation runner and result schema | Implemented in Phase 1 |
+| Deterministic seed propagation | Base env plus stochastic wrapper stack verified |
+| Run manifests and immutable output directories | Implemented in Phase 1 |
+| Historical checkpoint provenance | Audited; incomplete/unknown for all legacy checkpoints |
+| Automated tests | Phase-0/1 contract, replay, manifest and evaluator tests added |
+| Statistically clean, publication-grade rerun | Missing |
+| HITL or physical flight validation | Not started |
 
-# Train with an overridden custom configuration
-python train.py --config config.yaml
+## Safety caveat
 
-# Train for a specific number of timesteps and run 4 parallel environments
-python train.py --timesteps 500000 --n-envs 4
+The current HardNet policy projects the Gaussian action-distribution mean, not
+every stochastic sample. The projection also uses finite iterations and a
+proxy model. Consequently, the repository does not currently support the claim
+that every executed action is guaranteed safe. See `PROJECT.md` for the exact
+claim boundary and the required repair.
 
-# Resume training from a saved checkpoint
-python train.py --stage stage1a --resume logs/stages/stage1a/models/ibvs_ppo_100000_steps.zip
-```
+## Configuration and commands
 
-#### CLI Parameters:
-* `--config` *(str)*: Path to the configuration YAML file (default: `config.yaml`).
-* `--stage` *(str)*: Experiment stage name used for outputs (default: `experiment.stage` from `config.yaml`).
-* `--timesteps` *(int)*: Override the total training timesteps.
-* `--n-envs` *(int)*: Override the number of parallel simulation environments.
-* `--resume` *(str)*: Path to a saved `.zip` model checkpoint to resume training from.
+The canonical config is the default for new training. Historical point-mass
+Stage 3/4 reconstruction uses `configs/legacy/stage3_stage4.yaml`; the
+equal-capability branch uses
+`configs/legacy/equal_capability_evasion.yaml`.
 
-> [!NOTE]
-> **Output Assets**:
-> - Models are saved under `logs/stages/<stage>/models/` (a final model `ibvs_ppo_final.zip` and periodic checkpoints are generated).
-> - TensorBoard event files are saved to `logs/stages/<stage>/tensorboard/`. Run `tensorboard --logdir logs/stages/<stage>/tensorboard` to inspect live progress.
-
----
-
-### 2. Evaluating the Agent (`eval.py`)
-Performs multiple evaluation episodes to assess the agent's performance (success rate, intercept time, and tracking errors) and generates a detailed diagnostic figure.
-
-```bash
-# Evaluate the final model on 20 episodes
-python eval.py --stage stage1a
-
-# Run 50 deterministic evaluation episodes using a custom random seed
-python eval.py --stage stage1a --episodes 50 --seed 123 --deterministic
-
-# Plot the best-performing episode instead of the default first episode
-python eval.py --stage stage1a --plot-episode -1
-```
-
-#### CLI Parameters:
-* `--model` *(str)*: Path to the saved model (exclude the `.zip` extension). If omitted, uses `logs/stages/<stage>/models/ibvs_ppo_final`.
-* `--config` *(str)*: Path to the configuration YAML file.
-* `--stage` *(str)*: Experiment stage name used for outputs and the default model path.
-* `--episodes` *(int)*: Number of episodes to run during evaluation.
-* `--deterministic` *(flag)*: Force the policy to choose actions deterministically.
-* `--plot-episode` *(int)*: Index of the episode to plot. Set to `0` for the first, or `-1` to automatically choose the "best" episode (lowest relative interception distance).
-* `--seed` *(int)*: Base random seed for the evaluation batch.
-
-> [!NOTE]
-> **Output Assets**:
-> - An episode breakdown diagram is saved under `logs/stages/<stage>/eval/episode_<id>_analysis.png`, plotting 3D coordinates, camera coordinate trajectories, distance histories, actions, and step rewards.
-
----
-
-### 3. Rendering Animated Replays & Summary Dashboards (`visualize.py`)
-Generates high-performance interactive or file-based synchronized animations showing the drone in real-time alongside a diagnostic summary dashboard.
+Typical current commands are:
 
 ```bash
-# Save the default 4-panel animation of the best evaluation episode
-python visualize.py --stage stage1a --episodes 10 --episode best
-
-# Export a high-resolution animation to an MP4 video file at 30 FPS
-python visualize.py --stage stage3a --save logs/stages/stage3a/videos/replay_best.mp4 --fps 10
-
-# Export the animation as a GIF
-python visualize.py --stage stage4a_hardnet_d_seed7 --save logs/stages/stage4a_hardnet_d_seed7/videos/replay_best.gif --skip 3
-
-# Run a 100-episode evaluation and save a static aggregate performance dashboard
-python visualize.py --stage stage4a_hardnet_d_seed7 --episodes 100 --save-dashboard logs/stages/stage4a_hardnet_d_seed7/eval/dashboard.png
+python train.py --help
+python train.py --stage <run-name> --seed <seed>
+python -m evaluation --help
+python -m evaluation \
+  --model artifacts/runs/<run-id>/models/ibvs_ppo_final.zip \
+  --suite evaluation/suites/validation_v1.yaml \
+  --output artifacts/evaluations/<evaluation-id>
+python -m pytest -q
 ```
 
-#### CLI Parameters:
-* `--model` *(str)*: Path to the saved model file (exclude the `.zip` extension). If omitted, uses `logs/stages/<stage>/models/ibvs_ppo_final`.
-* `--config` *(str)*: Path to the configuration YAML file.
-* `--stage` *(str)*: Experiment stage name used for outputs and the default model path.
-* `--save` *(str)*: Output filename for the exported animation (supports `.mp4` and `.gif`). If omitted with `--stage`, saves to `logs/stages/<stage>/videos/replay_best.mp4`; otherwise launches an interactive GUI window.
-* `--save-dashboard` *(str)*: Path to save the multi-episode dashboard analysis image (e.g. `dashboard.png`).
-* `--episodes` *(int)*: Number of evaluation episodes to run before selecting one to animate (default: `1`).
-* `--episode` *(str)*: Selection criterion for the animation: `'best'` (lowest final distance), `'worst'`, or an explicit integer index (e.g., `0` for the first episode).
-* `--fps` *(int)*: Playback speed frame rate (default: `25`).
-* `--skip` *(int)*: Plot every $N$-th simulation step to speed up rendering and compress video file size (default: `2`).
-* `--deterministic` *(flag)*: Run the model with deterministic policy outputs (default: `True`).
-* `--seed` *(int)*: Initial random seed.
+The canonical scope guard rejects options such as `--wind`, `--hardnet`, or
+`--maneuver-curriculum` unless the run is explicitly marked as a scope
+override. This prevents exploratory settings from silently becoming the MVP.
 
-#### 🎛️ The 4-Panel Animation Layout:
-* **Panel 1 (Top-Left)**: Animated 3D Trajectory showing the interceptor path (cyan), target path (coral), starting points, and the active 3D camera Field of View (FOV) cone.
-* **Panel 2 (Top-Right)**: The camera's **2D Image Plane**, rendering the projected target position relative to the center crosshair and the yellow HFOV/VFOV boundary box (updates color to red if the target escapes the camera frame).
-* **Panel 3 (Bottom-Left)**: Synchronized time series curves for relative 3D distance and normalized image plane error.
-* **Panel 4 (Bottom-Right)**: Active action control commands ($v_x, v_y, v_z$ velocities and $\dot{\psi}$ yaw rate) paired with the cumulative reward.
+Install the core project and development checks with:
 
----
+```bash
+python -m pip install -e ".[dev]"
+```
 
-## 📊 Target Evasion Modes
+Use `.[safety]`, `.[reports]`, or `.[all]` for the corresponding historical
+tools. MP4 rendering additionally needs the system `ffmpeg` executable. Every
+new training/evaluation directory stores the exact installed dependency
+versions, resolved config, Git state and hashes in `manifest.json`.
 
-The target model in `models/target_model.py` dynamically selects one of four aggressive flight modes during episode reset, ensuring a robust RL policy:
-1. **Stationary/Hovering (`hover`)**: The target floats at a static coordinate, acting as a basic visual servoing baseline.
-2. **Constant Velocity (`constant_velocity`)**: The target travels along a straight vector with a random heading and pitch at up to `target.v_max`.
-3. **Sinusoidal Evasion (`sinusoidal`)**: The target executes high-frequency, aggressive snake-like maneuvers perpendicular to its forward axis.
-4. **Aggressive Orbit (`circular`)**: The target performs tight, high-G circular banks at orbital speeds to break visual lock.
+## Next milestone: clean Interception MVP v1
 
+Phase 1 has made the execution and evidence pipeline reproducible. Phase 2 is
+deliberately narrower than the future publication matrix:
 
- 
+1. add dynamics, camera, reward and reachability/oracle correctness checks;
+2. fix the development success thresholds before starting substantive training;
+3. train clean PPO only on the frozen `cruise`, `steady_turn`, and `weave`
+   task with multiple independent seeds;
+4. select checkpoints only on `validation_v1`;
+5. run the untouched `test_v1` bank only after the pipeline and selection rule
+   are frozen.
+
+Classical IBVS, robustness profiles, CBF and HardNet follow this milestone. No
+new policy architecture is added before it works end to end.
+
+## Origins
+
+The simulator was initially inspired by *High-Speed Interception Multicopter
+Control by Image-based Visual Servoing* (Yang et al., arXiv:2404.08296). The
+current project is not a reproduction of that controller; a fair classical
+IBVS baseline remains a required next step.

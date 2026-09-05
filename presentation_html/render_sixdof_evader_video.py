@@ -9,6 +9,7 @@ from stable_baselines3 import PPO
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "scripts", "legacy"))
 
 import visualize  # noqa: E402
 from eval_evasion import build_env  # noqa: E402
@@ -29,7 +30,7 @@ def make_env(cfg, level):
 
 
 def main():
-    with open(os.path.join(ROOT, "config.yaml")) as f:
+    with open(os.path.join(ROOT, "configs", "legacy", "stage3_stage4.yaml")) as f:
         cfg = yaml.safe_load(f)
 
     model = PPO.load(MODEL)

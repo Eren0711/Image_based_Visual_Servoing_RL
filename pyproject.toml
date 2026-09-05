@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-based-visual-servoing-rl"
+version = "0.1.0"
+description = "Research prototype for fixed-camera, image-guided drone interception with reinforcement learning"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "gymnasium>=0.29",
+  "stable-baselines3>=2.3",
+  "matplotlib>=3.7",
+  "PyYAML>=6.0",
+  "tensorboard>=2.14",
+  "tqdm>=4.65",
+  "rich>=13.0",
+]
+
+[project.scripts]
+ibvs-train = "train:main"
+ibvs-evaluate = "evaluation.cli:main"
+
+[project.optional-dependencies]
+safety = [
+  "quadprog>=0.1.11",
+]
+reports = [
+  "tbparse>=0.0.9",
+  "Pillow>=10.0",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+]
+all = [
+  "quadprog>=0.1.11",
+  "tbparse>=0.0.9",
+  "Pillow>=10.0",
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+]
+
+[tool.setuptools]
+py-modules = [
+  "evaluate",
+  "experiment_paths",
+  "project_config",
+  "train",
+  "visualize",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "configs*",
+  "envs*",
+  "evaluation*",
+  "models*",
+  "observers*",
+  "runtime*",
+  "safety*",
+]
+exclude = ["logs*", "results*", "report*", "references*", "tests*"]
+
+[tool.setuptools.package-data]
+configs = ["canonical/*.yaml", "legacy/*.yaml"]
+evaluation = ["suites/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+pythonpath = ["."]

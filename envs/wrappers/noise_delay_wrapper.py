@@ -23,6 +23,8 @@ import numpy as np
 import gymnasium as gym
 from collections import deque
 
+from runtime.seeding import derive_seed
+
 
 class NoiseDelayWrapper(gym.ObservationWrapper):
     """Add measurement noise and delay to image observations.
@@ -66,6 +68,7 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
 
         # RNG for noise
         self._noise_rng = np.random.default_rng(seed)
+        self._last_seed = seed
 
         # Observation space unchanged (same shape and bounds)
 
@@ -82,15 +85,18 @@ class NoiseDelayWrapper(gym.ObservationWrapper):
 
         self._prev_noisy_p_bar = initial_p_bar.copy()
 
-        # Reseed noise RNG
-        if hasattr(self.env, 'np_random'):
-            seed = int(self.env.np_random.integers(0, 2**31))
-            self._noise_rng = np.random.default_rng(seed)
+        # Use a namespaced stream so reset(seed=x) reproduces this wrapper
+        # without consuming or correlating the base environment's RNG.
+        reset_seed = kwargs.get('seed')
+        if reset_seed is not None:
+            self._last_seed = derive_seed(reset_seed, 'noise_delay')
+            self._noise_rng = np.random.default_rng(self._last_seed)
 
         # Mark the info with wrapper metadata
         info['noise_delay_active'] = True
         info['delay_steps'] = self.delay
         info['sigma_noise'] = self.sigma_noise
+        info.setdefault('seed_bundle', {})['noise_delay'] = self._last_seed
 
         return self.observation(obs), info
 
