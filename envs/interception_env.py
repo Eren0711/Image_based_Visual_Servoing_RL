@@ -31,6 +31,8 @@ from models.target_model import TargetDrone
 from models.camera_model import PinholeCamera
 from observers.interaction_matrix import InteractionMatrix
 from observers.depth_estimator import DepthEstimator
+from project_config import validate_canonical_config
+from runtime.seeding import derive_seed
 
 
 class InterceptionEnv(gym.Env):
@@ -59,9 +61,10 @@ class InterceptionEnv(gym.Env):
     Reward: uses PRIVILEGED ground-truth distance for approach reward.
             Attitude stability penalty added (Stage 3a).
 
-    Episode termination:
-        - Success: relative distance < d_success
-        - FOV loss: target lost for > fov_loss_limit consecutive steps
+    Episode termination (canonical v1 precedence):
+        - Success: relative distance <= d_success
+        - Flight envelope: configured consecutive pitch/roll limit violations
+        - FOV loss: target lost for fov_loss_limit consecutive steps
         - Timeout: step count >= max_steps (truncation)
     """
 
@@ -71,14 +74,20 @@ class InterceptionEnv(gym.Env):
         """Initialize the interception environment.
 
         Args:
-            config: Full configuration dictionary (from config.yaml).
-                    If None, loads default config from config.yaml.
+            config: Full configuration dictionary. If None, loads the frozen
+                    canonical v1 config.
         """
         super().__init__()
 
         # Load configuration
-        if config is None:
+        loaded_default = config is None
+        if loaded_default:
             config = self._load_default_config()
+        # Any canonical metadata must satisfy the exact frozen contract. The
+        # no-argument default is also always validated, so deleting/changing
+        # its canonical ID cannot bypass the guard.
+        if loaded_default or 'canonical' in config:
+            validate_canonical_config(config)
         self.config = config
 
         # Extract sub-configs
@@ -103,22 +112,42 @@ class InterceptionEnv(gym.Env):
                 f"Unknown interceptor model '{model_name}'. "
                 f"Must be 'kinematic_3a' or 'multicopter_6dof'."
             )
-        # Target model selector. Default: point-mass TargetDrone (Stages 1-4b).
-        # 'sixdof' uses a full 6-DOF target with the SAME agility limits as the
-        # interceptor (symmetric adversary, evasion curriculum) — set via
-        # config['target']['model'] = 'sixdof'.
+        # Target model selector. Default: point-mass TargetDrone (legacy).
+        # 'sixdof' reuses the interceptor's dynamics implementation, while
+        # allowing the target block to override its capability limits. This
+        # makes equal capability an explicit experiment rather than a hidden
+        # constructor side effect.
         target_model = tgt_cfg.get('model', 'point_mass')
         if target_model == 'sixdof':
             from models.target_6dof import SixDOFTarget
-            # Build the 6-DOF target from the INTERCEPTOR config block so its
-            # agility (v_max, a_max, omega_max, attitude limits, dynamics_6dof)
-            # exactly equals the interceptor's. Evasion-guidance params, if any,
-            # are merged from the target config.
+            # Start from interceptor dynamics. Equal capability is retained
+            # only when requested explicitly; otherwise target limits override
+            # the inherited values. Guidance parameters always come from the
+            # target block.
             sixdof_cfg = {**int_cfg}
-            for k in ('cruise_frac', 'turn_accel_frac', 'weave_period',
-                      'jink_period', 'react_dist'):
+            inherit_limits = bool(
+                tgt_cfg.get('inherit_interceptor_limits', False)
+            )
+            capability_keys = (
+                'v_max', 'a_max', 'yaw_rate_max', 'max_pitch_deg',
+                'max_roll_deg',
+            )
+            guidance_keys = (
+                'cruise_frac', 'turn_accel_frac', 'weave_period',
+                'jink_period', 'react_dist',
+            )
+            if not inherit_limits:
+                for k in capability_keys:
+                    if k in tgt_cfg:
+                        sixdof_cfg[k] = tgt_cfg[k]
+            for k in guidance_keys:
                 if k in tgt_cfg:
                     sixdof_cfg[k] = tgt_cfg[k]
+            if not inherit_limits and 'dynamics_6dof' in tgt_cfg:
+                sixdof_cfg['dynamics_6dof'] = {
+                    **int_cfg.get('dynamics_6dof', {}),
+                    **tgt_cfg['dynamics_6dof'],
+                }
             self.target = SixDOFTarget(sixdof_cfg)
         else:
             self.target = TargetDrone(tgt_cfg_full)
@@ -145,6 +174,12 @@ class InterceptionEnv(gym.Env):
         self.d_success = env_cfg['d_success']
         self.d_image_cutoff = env_cfg.get('d_image_cutoff', 25.0)
         self.fov_loss_limit = env_cfg['fov_loss_limit']
+        self.terminate_on_attitude_violation = bool(
+            env_cfg.get('terminate_on_attitude_violation', False)
+        )
+        self.attitude_violation_grace_steps = max(
+            1, int(env_cfg.get('attitude_violation_grace_steps', 1))
+        )
         self.init_dist_range = env_cfg['init_distance_range']
         self.norm_dist_max = env_cfg['norm_distance_max']
         self.norm_vel_max = env_cfg['norm_velocity_max']
@@ -168,6 +203,9 @@ class InterceptionEnv(gym.Env):
         self.w_near_brake = rwd_cfg.get('w_near_brake', 0.0)      # Stage 3a-noisy polish
         self.d_brake = rwd_cfg.get('d_brake', 5.0)
         self.w_intercept = rwd_cfg['w_intercept']
+        self.w_envelope_violation = rwd_cfg.get(
+            'w_envelope_violation', 0.0
+        )
         self.w_timeout  = rwd_cfg['w_timeout']
         self.k1_image   = rwd_cfg['k1_image']
 
@@ -188,6 +226,7 @@ class InterceptionEnv(gym.Env):
         # --- Internal state ---
         self._step_count = 0
         self._fov_loss_counter = 0
+        self._attitude_violation_counter = 0
         self._prev_distance = 0.0
         self._prev_p_bar = np.zeros(2)
         self._current_p_bar = np.zeros(2)
@@ -198,10 +237,12 @@ class InterceptionEnv(gym.Env):
         self._current_yaw_rate = 0.0       # Yaw rate applied this step
         self._prev_pitch = 0.0             # Stage 3a: for angular rate estimation
         self._prev_roll = 0.0
+        self._episode_seed = None
+        self._target_seed = None
 
     @staticmethod
     def _load_default_config() -> dict:
-        """Load the default configuration from config.yaml.
+        """Load the frozen canonical v1 configuration.
 
         Returns:
             dict: parsed YAML configuration.
@@ -210,7 +251,7 @@ class InterceptionEnv(gym.Env):
         import os
         config_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            'config.yaml'
+            'configs', 'canonical', 'fixed_camera_intercept_v1.yaml'
         )
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
@@ -248,10 +289,12 @@ class InterceptionEnv(gym.Env):
             info: dict — initial info.
         """
         super().reset(seed=seed)
+        self._episode_seed = int(seed) if seed is not None else None
 
         # --- Reset counters ---
         self._step_count = 0
         self._fov_loss_counter = 0
+        self._attitude_violation_counter = 0
         self._episode_outcome = 'running'
         self._prev_action = np.zeros(4)
         self._current_yaw_rate = 0.0
@@ -272,7 +315,12 @@ class InterceptionEnv(gym.Env):
         mode = self.np_random.choice(self.target_modes)
 
         # --- Reset target ---
-        target_seed = int(self.np_random.integers(0, 2**31))
+        target_seed = (
+            derive_seed(seed, 'target_guidance')
+            if seed is not None
+            else int(self.np_random.integers(0, 2**31))
+        )
+        self._target_seed = target_seed
         self.target.reset(target_pos, target_vel, mode, seed=target_seed)
 
         # --- Compute initial camera projection ---
@@ -341,7 +389,24 @@ class InterceptionEnv(gym.Env):
             if cam_result['in_fov'] and cam_result['fov_margin'] > 0.2:
                 break
 
-        speed = self.np_random.uniform(0.0, self.target.v_max * 0.5)
+        speed_frac_range = self.config['target'].get(
+            'initial_speed_fraction_range', [0.0, 0.5]
+        )
+        if (not isinstance(speed_frac_range, (list, tuple))
+                or len(speed_frac_range) != 2):
+            raise ValueError(
+                'target.initial_speed_fraction_range must be [min, max]'
+            )
+        speed_frac_min, speed_frac_max = map(float, speed_frac_range)
+        if not 0.0 <= speed_frac_min <= speed_frac_max <= 1.0:
+            raise ValueError(
+                'target.initial_speed_fraction_range must satisfy '
+                '0 <= min <= max <= 1'
+            )
+        speed = self.np_random.uniform(
+            speed_frac_min * self.target.v_max,
+            speed_frac_max * self.target.v_max,
+        )
         vel_dir = self.np_random.standard_normal(3)
         vel_norm = np.linalg.norm(vel_dir)
         if vel_norm > 1e-6:
@@ -363,7 +428,7 @@ class InterceptionEnv(gym.Env):
         Returns:
             observation: np.ndarray (16,)
             reward: float
-            terminated: bool (success or FOV loss)
+            terminated: bool (success, flight-envelope violation or FOV loss)
             truncated: bool (timeout)
             info: dict
         """
@@ -417,6 +482,15 @@ class InterceptionEnv(gym.Env):
         else:
             self._fov_loss_counter = 0
 
+        attitude_violation = (
+            abs(self.interceptor.pitch) > self.max_pitch
+            or abs(self.interceptor.roll) > self.max_roll
+        )
+        if attitude_violation:
+            self._attitude_violation_counter += 1
+        else:
+            self._attitude_violation_counter = 0
+
         # --- Compute reward (uses PRIVILEGED ground-truth distance) ---
         reward = self._compute_reward(
             cam_result, current_distance, action
@@ -426,10 +500,17 @@ class InterceptionEnv(gym.Env):
         terminated = False
         truncated = False
 
-        if current_distance < self.d_success:
+        if current_distance <= self.d_success:
             terminated = True
             self._episode_outcome = 'success'
             reward += self.w_intercept
+
+        elif (self.terminate_on_attitude_violation
+              and self._attitude_violation_counter
+              >= self.attitude_violation_grace_steps):
+            terminated = True
+            self._episode_outcome = 'flight_envelope_violation'
+            reward += self.w_envelope_violation
 
         elif self._fov_loss_counter >= self.fov_loss_limit:
             terminated = True
@@ -672,6 +753,11 @@ class InterceptionEnv(gym.Env):
             'in_fov':            bool(cam_result['in_fov']),
             'fov_margin':        float(cam_result['fov_margin']),
             'episode_outcome':   self._episode_outcome,
+            'target_mode':       str(self.target.maneuver_mode),
+            'seed_bundle': {
+                'scenario': self._episode_seed,
+                'target_guidance': self._target_seed,
+            },
             'step_count':        self._step_count,
             'interceptor_pos':   self.interceptor.position.copy(),
             'target_pos':        self.target.position.copy(),
@@ -685,4 +771,9 @@ class InterceptionEnv(gym.Env):
             # Stage 3a: attitude diagnostics
             'pitch_deg':         float(np.rad2deg(self.interceptor.pitch)),
             'roll_deg':          float(np.rad2deg(self.interceptor.roll)),
+            'attitude_violation': bool(
+                abs(self.interceptor.pitch) > self.max_pitch
+                or abs(self.interceptor.roll) > self.max_roll
+            ),
+            'attitude_violation_steps': self._attitude_violation_counter,
         }

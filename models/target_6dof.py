@@ -1,12 +1,10 @@
 """
-Six-DOF Target Drone — Realistic Equal-Agility Adversary
-=========================================================
-A target that flies the SAME 6-DOF multicopter dynamics as the interceptor
-(``Multicopter6DOFLite``) with the SAME agility limits (v_max, a_max,
-yaw_rate_max, omega_max, attitude limits). This removes the interceptor/
-target asymmetry of the point-mass ``TargetDrone``: the 6-DOF target must
-bank to turn, its turn rate is bounded by its attitude loop, and turning
-couples to speed exactly as the interceptor's does.
+Six-DOF Target Drone — Configurable Multicopter Target
+======================================================
+A target that reuses the interceptor's 6-DOF-lite multicopter model
+(``Multicopter6DOFLite``), with independently configurable speed,
+acceleration, yaw-rate, and attitude limits. Equal capability is available as
+an explicit stress-test configuration; it is not assumed by this class.
 
 Because the underlying model has an SO(3) geometric attitude controller that
 converts a *body-frame acceleration command* into a coordinated banked turn,
@@ -28,8 +26,7 @@ Evasion curriculum (simplest -> hardest), selected by ``maneuver_mode``:
   L5  'random_evasive': reactive break-turns with randomized flip timing
                         (unpredictable, the hardest level).
 All levels hold cruise speed via a forward-acceleration term, and all lateral
-commands are bounded by the shared ``a_max`` — so the target can never out-
-accelerate the interceptor.
+commands are bounded by the target's configured ``a_max``.
 ----------------------------------------------------------------------------
 """
 
@@ -42,7 +39,7 @@ EVASION_LEVELS = ['cruise', 'steady_turn', 'weave', 'break_turn', 'random_evasiv
 
 
 class SixDOFTarget:
-    """6-DOF target with an evasion guidance law and equal agility limits."""
+    """6-DOF target with configurable limits and an evasion guidance law."""
 
     MODES = EVASION_LEVELS
 
@@ -50,11 +47,9 @@ class SixDOFTarget:
         """Build the 6-DOF target.
 
         Args:
-            config: must contain the SAME interceptor agility fields used for
-                symmetry: v_max, a_max, yaw_rate_max, dt, max_pitch_deg,
-                max_roll_deg, and a 'dynamics_6dof' block. By construction we
-                pass the interceptor's own config here so the target is an
-                exactly equal-capability adversary. Optional evasion params:
+            config: target dynamics configuration containing v_max, a_max,
+                yaw_rate_max, dt, max_pitch_deg, max_roll_deg, and a
+                'dynamics_6dof' block. Optional evasion params:
                   cruise_frac        (default 0.8) cruise speed = frac*v_max
                   turn_accel_frac    (default 0.9) lateral accel = frac*a_max
                   weave_period       (default 2.0 s) period of L3 S-curves
@@ -66,7 +61,8 @@ class SixDOFTarget:
         self.a_max = float(config['a_max'])
         self.yaw_rate_max = float(config['yaw_rate_max'])
 
-        # The flight model — identical class + limits as the interceptor.
+        # Same model class as the interceptor, using the target's resolved
+        # capability limits supplied by InterceptionEnv.
         self.model = Multicopter6DOFLite(config)
 
         # Evasion guidance parameters
@@ -122,8 +118,8 @@ class SixDOFTarget:
         self.model._body_vel = self.model.get_rotation_matrix().T @ velocity
 
         # Cruise speed = the SPAWNED initial speed, so the 6-DOF target matches
-        # whatever speed regime the env samples (the training distribution is
-        # uniform(0, 0.5*v_max)). This keeps the evasion comparison from
+        # whatever speed regime the env samples (canonical v1 uses
+        # uniform(0.2, 0.5)*v_max). This keeps the evasion comparison from
         # secretly also being a faster-target comparison. Falls back to
         # cruise_frac*v_max only when spawned essentially stationary.
         self._cruise_speed = speed if speed > 0.5 else self.cruise_frac * self.v_max

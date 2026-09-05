@@ -37,8 +37,7 @@ class TargetDrone:
         """Initialize target drone model.
 
         Args:
-            config: Dictionary with keys from config.yaml['target'] and
-                    config.yaml['interceptor'] (for dt).
+            config: Target configuration plus interceptor timing values.
                 Required: v_max, a_max, dt
                 Optional: sin_amplitude, sin_frequency, circle_radius,
                           circle_omega, random_switch_interval

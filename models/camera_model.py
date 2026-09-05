@@ -45,7 +45,7 @@ class PinholeCamera:
         """Initialize the pinhole camera model.
 
         Args:
-            config: Dictionary with keys from config.yaml['camera'].
+            config: Camera section of the active configuration.
                 Required: f_oc, alpha_hfov, alpha_vfov, R_c_b_euler
         """
         self.f_oc = config['f_oc']

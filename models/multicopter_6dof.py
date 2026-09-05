@@ -65,7 +65,7 @@ class Multicopter6DOFLite:
         """Initialize the 6-DOF model from config.
 
         Args:
-            config: Dictionary from config.yaml['interceptor']. Must contain
+            config: Interceptor section of the active configuration. Must contain
                 v_max, a_max, yaw_rate_max, dt, max_pitch_deg, max_roll_deg.
                 The 6-DOF-specific parameters live under config['dynamics_6dof']
                 with sensible defaults for a ~1 kg quad.

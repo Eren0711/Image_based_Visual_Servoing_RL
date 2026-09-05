@@ -59,7 +59,7 @@ class InterceptorDrone:
         """Initialize interceptor drone.
 
         Args:
-            config: Dictionary with keys from config.yaml['interceptor'].
+            config: Interceptor section of the active configuration.
                 Required: v_max, a_max, yaw_rate_max, dt
                 Stage 3a: tau_velocity, max_pitch_deg, max_roll_deg (optional)
         """

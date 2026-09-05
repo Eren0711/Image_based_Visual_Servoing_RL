@@ -1,0 +1,206 @@
+# Canonical Phase-0 system definition.
+#
+# This is the default configuration for new development. Files under
+# configs/legacy/ are retained only for historical/exploratory result
+# reconstruction; they do not define the current project scope.
+
+schema_version: 1
+
+canonical:
+  id: fixed_camera_intercept_v1
+  status: frozen
+  frozen_on: '2026-08-31'
+  authority: PROJECT.md
+  objective: >-
+    Learn image-guided interception with a rigid forward-facing monocular
+    camera in simulation, reaching a 2 m interception radius while avoiding
+    sustained FOV loss and interceptor attitude-envelope violation.
+  exclusions:
+    - raw_image_processing
+    - physical_contact_or_capture
+    - equal_agility_impossibility_theorem
+    - gimballed_camera
+    - recurrent_policy
+    - adversarial_multi_agent_training
+
+experiment:
+  stage: canonical_intercept_v1
+  output_root: ./artifacts/runs
+
+# Fixed, rigidly mounted pinhole camera. The current extrinsic is retained for
+# checkpoint compatibility. It maps body +x to camera +z (optical axis), body
+# +y to camera +y, and body +z to camera -x.
+camera:
+  model: pinhole_monocular
+  mounting: rigid_forward
+  f_oc: 300.0  # Metadata; normalized point projection currently ignores pixels.
+  alpha_hfov: 1.2217
+  alpha_vfov: 0.9599
+  R_c_b_euler: [0.0, -1.5707963267948966, 0.0]
+
+interceptor:
+  model: multicopter_6dof
+  v_max: 15.0
+  a_max: 10.0
+  yaw_rate_max: 0.7853981633974483
+  dt: 0.02
+  max_pitch_deg: 35.0
+  max_roll_deg: 35.0
+  dynamics_6dof:
+    mass: 1.0
+    J_xx: 0.01
+    J_yy: 0.01
+    J_zz: 0.02
+    tau_motor: 0.05
+    tau_rate: 0.05
+    thrust_to_weight: 3.0
+    omega_max: 4.0
+    k_attitude: 6.0
+
+# The target uses the same 6-DOF-lite model class but lower, explicit v1
+# capability limits. This is not an equal-capability/equal-agility claim.
+target:
+  model: sixdof
+  inherit_interceptor_limits: false
+  v_max: 10.0
+  a_max: 5.0
+  yaw_rate_max: 0.7853981633974483
+  max_pitch_deg: 35.0
+  max_roll_deg: 35.0
+  maneuver_modes:
+    - cruise
+    - steady_turn
+    - weave
+  initial_speed_fraction_range: [0.2, 0.5]
+  turn_accel_frac: 0.8
+  weave_period: 2.0
+
+# Frozen reset distribution implemented by InterceptionEnv. The target bearing
+# sampler draws body-frame components x~U(0.5,1), y/z~U(-0.3,0.3), normalizes
+# them, and rejects samples without geometric FOV margin >0.2.
+initial_conditions:
+  interceptor_position_efcs_m: [0.0, 0.0, 0.0]
+  interceptor_yaw: uniform_minus_pi_to_pi
+  target_range_m: [10.0, 30.0]
+  target_bearing_sampler: normalized_body_box_with_fov_margin
+  minimum_initial_fov_margin: 0.2
+  target_velocity_direction: isotropic_3d
+  target_speed_fraction_of_vmax: [0.2, 0.5]
+  target_mode_sampling: uniform
+
+# Exact v1 outcome contract at 50 Hz:
+#   success                   distance <= 2.0 m
+#   flight_envelope_violation |pitch| > 35 deg or |roll| > 35 deg for 1 step
+#   fov_loss                  outside FOV for 15 consecutive steps (0.30 s)
+#   timeout                   500 steps (10.0 s)
+# If multiple conditions occur on one step, precedence is the order above.
+env:
+  max_steps: 500
+  d_success: 2.0
+  fov_loss_limit: 15
+  terminate_on_attitude_violation: true
+  attitude_violation_grace_steps: 1
+  init_distance_range: [10.0, 30.0]
+  d_image_cutoff: 25.0
+  norm_distance_max: 50.0
+  norm_velocity_max: 15.0
+
+outcome_contract:
+  running_label: running
+  terminal_precedence:
+    - success
+    - flight_envelope_violation
+    - fov_loss
+    - timeout
+  terminated_outcomes:
+    - success
+    - flight_envelope_violation
+    - fov_loss
+  truncated_outcomes:
+    - timeout
+
+# Base policy contract. This block is validated as metadata; the indices match
+# InterceptionEnv's concrete 16-D observation and 4-D normalized action.
+policy_contract:
+  observation:
+    dimension: 16
+    fields:
+      - {name: image_error, indices: [0, 1]}
+      - {name: image_velocity, indices: [2, 3]}
+      - {name: target_visible, indices: [4]}
+      - {name: estimated_depth, indices: [5]}
+      - {name: body_velocity, indices: [6, 7, 8]}
+      - {name: attitude, indices: [9, 10, 11]}
+      - {name: previous_action, indices: [12, 13, 14, 15]}
+  action:
+    dimension: 4
+    normalized_range: [-1.0, 1.0]
+    acceleration_bound_semantics: component_wise_desired_command
+    fields:
+      - {name: body_acceleration, indices: [0, 1, 2], scale: interceptor.a_max}
+      - {name: yaw_rate, indices: [3], scale: interceptor.yaw_rate_max}
+
+# Phase-0/MVP default: clean simulated image features, built-in monocular depth
+# estimator, no external safety layer, no wind and no detector dropout. Those
+# variations enter only after the clean interception MVP is reproducible.
+pipeline:
+  feature_source: simulated_pinhole_projection
+  raw_images: false
+  depth_estimator: jacobian_inverse_depth
+  noise_delay: false
+  dkf_wrapper: false
+  intermittent_detection: false
+  wind: false
+  external_cbf: false
+  hardnet: false
+
+depth_estimator:
+  rho_init: 0.05
+  P_init: 1.0
+  Q: 0.001
+  R_base: 0.1
+  rho_min: 0.005
+  rho_max: 2.0
+  confidence_threshold: 0.01
+
+reward:
+  w_image: 0.4
+  w_approach: 2.0
+  w_dist_penalty: -0.15
+  w_near_brake: -0.05
+  d_brake: 5.0
+  w_fov_loss: -3.0
+  w_boundary: -0.5
+  w_effort: -0.05
+  w_jerk: -0.05
+  w_attitude: -0.1
+  w_intercept: 200.0
+  # Explicit terminal penalty prevents deliberate envelope violation from
+  # becoming a shortcut that avoids the remaining per-step costs.
+  w_envelope_violation: -100.0
+  w_timeout: -0.05
+  k1_image: 5.0
+
+training:
+  algorithm: PPO
+  total_timesteps: 3_000_000
+  n_envs: 16
+  policy: MlpPolicy
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  checkpoint_freq: 200000
+  eval_freq: 250000
+  eval_n_episodes: 20  # Paired validation seeds per target mode (60 episodes).
+
+evaluation:
+  # Compatibility defaults for the historical interactive eval.py. Canonical
+  # claims use evaluation/suites/{validation_v1,test_v1}.yaml instead.
+  n_episodes: 200
+  deterministic: true
+  seed_base: 10000  # Validation only; held-out test_v1 starts at 20000.
